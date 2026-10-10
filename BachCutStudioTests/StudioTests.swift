@@ -413,9 +413,14 @@ final class StudioTests: XCTestCase {
         let timeline = TimelineSurface(frame: CGRect(x: 0, y: 0, width: 393, height: 128))
         timeline.layoutIfNeeded()
         timeline.apply(project: project, selected: nil, thumbnails: [:], zoom: 24, playhead: 0, enabled: true)
-        XCTAssertEqual(timeline.collection.contentOffset.x + timeline.collection.contentInset.left, 0, accuracy: 0.01)
+        let initialAnchor = timeline.collection.contentOffset.x + timeline.collection.contentInset.left
+        // UIKit snaps scroll offsets to the display pixel grid (e.g. 1/6 pt on odd-width views).
+        // A sub-point tolerance allows pixel rounding without allowing a visible cursor jump.
+        XCTAssertEqual(initialAnchor, 0, accuracy: 0.5)
         timeline.apply(project: project, selected: nil, thumbnails: [:], zoom: 48, playhead: 0, enabled: true)
-        XCTAssertEqual(timeline.collection.contentOffset.x + timeline.collection.contentInset.left, 0, accuracy: 0.01)
+        let zoomedAnchor = timeline.collection.contentOffset.x + timeline.collection.contentInset.left
+        XCTAssertEqual(zoomedAnchor, initialAnchor, accuracy: 0.01, "Zoom must keep the same centered playhead anchor")
+        XCTAssertEqual(zoomedAnchor, 0, accuracy: 0.5)
     }
 
     func testCancelledExportRemovesPartialOutput() async throws {
