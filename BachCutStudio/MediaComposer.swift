@@ -1,6 +1,5 @@
 import AVFoundation
 import UIKit
-import Metal
 
 enum StudioError: LocalizedError {
     case message(String)
@@ -10,15 +9,15 @@ struct RenderedProject {
     let composition: AVMutableComposition
     let video: AVMutableVideoComposition
     let audio: AVMutableAudioMix
+    let needsVideoComposition: Bool
 }
 struct PreviewSource {
     let item: AVPlayerItem
     let temporaryURL: URL?
 }
 enum MediaComposer {
-    static var hasMetalDevice: Bool { MTLCreateSystemDefaultDevice() != nil }
-    static func previewSource(_ rendered: RenderedProject, directory: URL, useFile: Bool = !MediaComposer.hasMetalDevice) async throws -> PreviewSource {
-        if useFile {
+    @MainActor static func previewSource(_ rendered: RenderedProject, directory: URL, useFile: Bool? = nil) async throws -> PreviewSource {
+        if useFile ?? rendered.needsVideoComposition {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let url = directory.appendingPathComponent(UUID().uuidString + ".mp4")
             try await export(rendered, to: url)
@@ -26,7 +25,7 @@ enum MediaComposer {
             return PreviewSource(item: AVPlayerItem(url: url), temporaryURL: url)
         }
         let item = AVPlayerItem(asset: rendered.composition)
-        item.videoComposition = rendered.video
+        if rendered.needsVideoComposition { item.videoComposition = rendered.video }
         if !rendered.audio.inputParameters.isEmpty { item.audioMix = rendered.audio }
         return PreviewSource(item: item, temporaryURL: nil)
     }
@@ -58,6 +57,7 @@ enum MediaComposer {
             throw StudioError.message("Không tạo được timeline")
         }
         var canvas = CGSize.zero
+        var needsVideoComposition = !project.overlays.isEmpty
         var instructions: [AVMutableVideoCompositionInstruction] = []
         let baseMix = AVMutableAudioMixInputParameters(track: baseAudio)
         var mixes: [AVAudioMixInputParameters] = [baseMix]
@@ -88,7 +88,9 @@ enum MediaComposer {
             }
             baseMix.setVolume(Float(clip.volume), at: time(cursor))
             let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: base)
-            layer.setTransform(fittedTransform(size: size, transform: transform, canvas: canvas), at: time(cursor))
+            let fitted = fittedTransform(size: size, transform: transform, canvas: canvas)
+            needsVideoComposition = needsVideoComposition || fitted != .identity || size != canvas
+            layer.setTransform(fitted, at: time(cursor))
             let instruction = AVMutableVideoCompositionInstruction()
             instruction.timeRange = CMTimeRange(start: time(cursor), duration: time(clip.duration))
             instruction.backgroundColor = nil // AVFoundation defaults to opaque black; avoid grayscale CGColor in the live compositor.
@@ -144,21 +146,29 @@ enum MediaComposer {
         let video = AVMutableVideoComposition()
         video.renderSize = canvas; video.frameDuration = CMTime(value: 1, timescale: 30); video.instructions = finalInstructions
         let audio = AVMutableAudioMix(); audio.inputParameters = mixes
-        return RenderedProject(composition: composition, video: video, audio: audio)
+        return RenderedProject(composition: composition, video: video, audio: audio, needsVideoComposition: needsVideoComposition)
     }
     static func export(_ rendered: RenderedProject, to url: URL) async throws {
         guard let session = AVAssetExportSession(asset: rendered.composition, presetName: AVAssetExportPresetHighestQuality) else { throw StudioError.message("Không khởi tạo được bộ xuất") }
         session.outputURL = url; session.outputFileType = .mp4; session.shouldOptimizeForNetworkUse = true
         session.videoComposition = rendered.video
         if !rendered.audio.inputParameters.isEmpty { session.audioMix = rendered.audio }
+        let cancellation = ExportCancellation(session: session)
         await withTaskCancellationHandler {
             await session.export()
         } onCancel: {
-            session.cancelExport()
+            cancellation.cancel()
         }
         guard session.status == .completed else {
             try? FileManager.default.removeItem(at: url)
             throw session.error ?? StudioError.message("Xuất video thất bại")
         }
     }
+}
+
+// Only cancellation crosses the task boundary; the session's configuration stays with the export task.
+private final class ExportCancellation: @unchecked Sendable {
+    private let session: AVAssetExportSession
+    init(session: AVAssetExportSession) { self.session = session }
+    func cancel() { session.cancelExport() }
 }

@@ -266,10 +266,10 @@ final class StudioTests: XCTestCase {
         let rendered = try await MediaComposer.build(seed)
         let valid = try await rendered.video.isValid(for: rendered.composition, timeRange: CMTimeRange(start: .zero, duration: rendered.composition.duration), validationDelegate: nil)
         XCTAssertTrue(valid)
-        print("METAL_AVAILABLE=\(MediaComposer.hasMetalDevice)")
+        XCTAssertFalse(rendered.needsVideoComposition)
         for forceFile in [false, true] {
-            // Both cases use the application's preview path. File mode also covers hosts without a GPU.
-            let preview = try await MediaComposer.previewSource(rendered, directory: root.appendingPathComponent("Preview"), useFile: forceFile || !MediaComposer.hasMetalDevice)
+            // Exercise the fast path and the composed-file path through the application preview API.
+            let preview = try await MediaComposer.previewSource(rendered, directory: root.appendingPathComponent("Preview"), useFile: forceFile ? true : nil)
             defer { if let url = preview.temporaryURL { try? FileManager.default.removeItem(at: url) } }
             let candidate = AVPlayer(playerItem: preview.item); candidate.automaticallyWaitsToMinimizeStalling = false
             surface.videoLayer.player = candidate
@@ -293,6 +293,12 @@ final class StudioTests: XCTestCase {
         XCTAssertGreaterThan(model.player?.currentTime().seconds ?? 0, 0.1)
         XCTAssertGreaterThan(model.playhead, 0.1)
         XCTAssertTrue(surface.videoLayer.isReadyForDisplay)
+        model.pause(); model.setRatio(.square); try await waitForPreview(model)
+        surface.videoLayer.player = model.player
+        XCTAssertTrue(model.player?.currentItem?.asset is AVURLAsset, "Composed preview must use the rendered frame path")
+        model.seek(0); model.togglePlayback(); try await Task.sleep(nanoseconds: 1_000_000_000)
+        print("COMPOSED_MODEL " + model.debugInfo + " frame=\(surface.videoLayer.isReadyForDisplay)")
+        XCTAssertGreaterThan(model.playhead, 0.1); XCTAssertTrue(surface.videoLayer.isReadyForDisplay)
         model.close(); surface.videoLayer.player = nil
         let restored = try model.store.list()[0]
         let reopened = EditorModel(project: restored, store: model.store); defer { reopened.close() }

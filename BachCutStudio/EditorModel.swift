@@ -159,6 +159,7 @@ import Photos
         recordEvent("rebuild")
         let token = revision, snapshot = project
         let oldTime = playhead, oldSeek = seekRevision, shouldResume = playing, oldPlayback = playbackRevision
+        player?.pause() // Freeze the exact position while a replacement preview is prepared.
         rendering = true; playerReady = false
         defer { if token == revision { rendering = false } }
         do {
