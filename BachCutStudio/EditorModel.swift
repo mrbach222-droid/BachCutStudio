@@ -141,7 +141,9 @@ import Photos
         guard let from = clips.firstIndex(where: { $0.id == id }), clips.indices.contains(index), from != index else { return }
         pause()
         edit { p in let clip = p.clips.remove(at: from); p.clips.insert(clip, at: index) }
-        selected = id; seek(project.startTime(of: id))
+        // Keep the center playhead stable after a drag/drop rather than jumping
+        // to the moved clip's new starting time.
+        selected = id
     }
     func removeSelected() { guard let id = selected else { return }; edit { $0.clips.removeAll { $0.id == id } } }
     func duplicateSelected() { guard let id = selected else { return }; var newID: UUID?; edit { newID = $0.duplicate(id: id) }; selected = newID }

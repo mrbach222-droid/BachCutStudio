@@ -379,6 +379,7 @@ final class StudioTests: XCTestCase {
         let originalClips = model.clips
         let undoCount = model.undoStack.count
         model.moveClip(moving, to: 0)
+        XCTAssertEqual(model.playhead, 6.125, accuracy: 0.02, "Moving a clip must not jump the fixed timeline playhead")
         XCTAssertEqual(model.clips, Array(originalClips.reversed())); XCTAssertEqual(model.undoStack.count, undoCount + 1)
         model.undo(); XCTAssertEqual(model.clips.map(\.id), original); model.redo(); XCTAssertEqual(model.clips.first?.id, moving)
         let view = TimelineSurface(frame: CGRect(x: 0, y: 0, width: 390, height: 128)); view.layoutIfNeeded()
@@ -389,6 +390,19 @@ final class StudioTests: XCTestCase {
         view.apply(project: model.project, selected: moving, thumbnails: [:], zoom: 80, playhead: 5, enabled: true)
         XCTAssertEqual(view.collection.contentOffset.x + view.collection.contentInset.left, 400, accuracy: 0.01)
     }
+    func testMagneticScrubSnapsOnlyNearEditedClipBoundaries() {
+        let clips = [
+            VideoSegment(url: URL(fileURLWithPath: "/first.mov"), start: 0, end: 3, sourceDuration: 3),
+            VideoSegment(url: URL(fileURLWithPath: "/second.mov"), start: 0, end: 2, sourceDuration: 2)
+        ]
+        // At 50 pt/s, a 10 pt magnetic zone spans 0.2 seconds either side of a cut.
+        XCTAssertEqual(TimelineSurface.snappedTime(3.15, in: clips, zoom: 50), 3, accuracy: 0.0001)
+        XCTAssertEqual(TimelineSurface.snappedTime(3.30, in: clips, zoom: 50), 3.30, accuracy: 0.0001)
+        XCTAssertEqual(TimelineSurface.snappedTime(4.86, in: clips, zoom: 50), 5, accuracy: 0.0001)
+        XCTAssertEqual(TimelineSurface.snappedTime(2.7, in: clips, zoom: 20), 3, accuracy: 0.0001)
+        XCTAssertEqual(TimelineSurface.snappedTime(2.7, in: clips, zoom: 80), 2.7, accuracy: 0.0001)
+    }
+
     func testCancelledExportRemovesPartialOutput() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("long.mov"); try await TestMedia.video(to: source, color: .green, duration: 20)
