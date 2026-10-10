@@ -415,7 +415,7 @@ final class StudioTests: XCTestCase {
             XCTAssertEqual(size.height, CGFloat(resolution)); XCTAssertEqual(size.width, CGFloat((Double(resolution) * 16 / 9 / 2).rounded() * 2))
             XCTAssertEqual(Double(rate), Double(fps), accuracy: 0.1)
             let reader = try AVAssetReader(asset: asset)
-            let outputFrames = AVAssetReaderTrackOutput(track: track, outputSettings: nil); reader.add(outputFrames)
+            let outputFrames = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]); reader.add(outputFrames)
             XCTAssertTrue(reader.startReading())
             var count = 0
             while let sample = outputFrames.copyNextSampleBuffer() {
