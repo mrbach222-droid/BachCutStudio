@@ -70,7 +70,7 @@ struct EditorScreen: View {
                 Spacer()
                 Button { model.seek(0) } label: { Image(systemName: "backward.end.fill") }.accessibilityLabel("Về đầu")
                 Button { model.togglePlayback() } label: { Image(systemName: model.playing ? "pause.fill" : "play.fill").frame(width: 36, height: 28) }
-                    .disabled(model.player == nil || model.rendering || model.busy).accessibilityIdentifier("playPause")
+                    .disabled(!model.playerReady || model.rendering || model.busy).accessibilityIdentifier("playPause")
                 Spacer()
                 Text(formatTime(model.duration)).font(.caption.monospacedDigit()).accessibilityIdentifier("durationTime")
             }.foregroundStyle(.white).buttonStyle(.plain)
@@ -130,21 +130,19 @@ struct EditorScreen: View {
                     }.frame(width: max(240, model.duration * zoom), alignment: .leading)
                     Rectangle().fill(.white).frame(width: 2).offset(x: model.playhead * zoom).allowsHitTesting(false)
                 }.padding(.vertical, 3)
-                    .gesture(DragGesture(minimumDistance: 0).onEnded { value in
-                        // Buttons select clips; the ruler/background also supports exact positioning.
-                        if value.startLocation.y < 23 { model.pause(); model.seek(value.location.x / zoom) }
-                    })
             }.frame(minHeight: 125).background(.white.opacity(0.035)).clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
     var ruler: some View {
         ZStack(alignment: .leading) {
             Color.clear.frame(height: 22)
-            let step = max(1, Int(80 / zoom))
+            let step = max(max(1, Int(80 / zoom)), Int(ceil(model.duration / 300)))
             ForEach(Array(stride(from: 0, through: Int(ceil(model.duration)), by: step)), id: \.self) { second in
                 Text(formatTime(Double(second))).font(.system(size: 9, design: .monospaced)).foregroundStyle(.gray).offset(x: Double(second) * zoom)
             }
-        }
+        }.contentShape(Rectangle()).gesture(DragGesture(minimumDistance: 0).onEnded { value in
+            model.pause(); model.seek(value.location.x / zoom)
+        })
     }
     func timelineRow(label: String, offset: Double, length: Double, color: Color) -> some View {
         HStack(spacing: 0) {

@@ -55,7 +55,7 @@ struct StudioHome: View {
                     }.buttonStyle(.plain).accessibilityIdentifier("newProject")
                     HStack(spacing: 10) {
                         feature("Nhiều lớp", "square.3.layers.3d")
-                        feature("Landscape Pro", "rectangle.landscape")
+                        feature("Landscape Pro", "rectangle")
                         feature("MP4 & Ảnh", "square.and.arrow.up")
                     }
                     HStack { Text("DỰ ÁN ĐÃ LƯU").font(.caption.bold()).tracking(2).foregroundStyle(.gray); Spacer(); Text("\(projects.count)").font(.caption) }

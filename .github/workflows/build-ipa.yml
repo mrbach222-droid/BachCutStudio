@@ -27,6 +27,13 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild -project BachCutStudio.xcodeproj -scheme BachCutStudio -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 120 -maximum-test-execution-time-allowance 180 -resultBundlePath TestResults.xcresult CODE_SIGNING_ALLOWED=NO test 2>&1 | tee tests.log
+      - name: Export test summary and UI screenshots
+        if: always()
+        run: |
+          if test -d TestResults.xcresult; then
+            xcrun xcresulttool get test-results summary --path TestResults.xcresult > test-summary.json || true
+            xcrun xcresulttool export attachments --path TestResults.xcresult --output-path screenshots || true
+          fi
       - name: Compile native release app
         run: |
           set -o pipefail
@@ -48,6 +55,8 @@ jobs:
           name: BachCutStudio-validation
           path: |
             TestResults.xcresult
+            test-summary.json
+            screenshots
             tests.log
             build.log
           retention-days: 30

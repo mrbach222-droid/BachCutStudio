@@ -80,7 +80,7 @@ final class StudioTests: XCTestCase {
         XCTAssertEqual(rendered.composition.duration.seconds, 2, accuracy: 0.04)
         XCTAssertEqual(rendered.video.renderSize, CGSize(width: 160, height: 160))
         XCTAssertEqual(rendered.composition.tracks(withMediaType: .video).count, 2)
-        XCTAssertEqual(rendered.composition.tracks(withMediaType: .audio).count, 2)
+        XCTAssertEqual(rendered.composition.tracks(withMediaType: .audio).count, 1)
         let output = root.appendingPathComponent("export.mp4")
         try await MediaComposer.export(rendered, to: output)
         let asset = AVURLAsset(url: output)
@@ -191,8 +191,9 @@ final class StudioTests: XCTestCase {
         XCTAssertEqual(model.playhead, position, accuracy: 0.12)
         let restored = try model.store.list()[0]
         XCTAssertEqual(restored.clips, model.clips)
-        await model.export(); XCTAssertNotNil(model.exportedURL)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: model.exportedURL!.path))
+        await model.export()
+        let exported = try XCTUnwrap(model.exportedURL, model.progress)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exported.path))
         model.seek(0); model.togglePlayback()
         try await Task.sleep(nanoseconds: 250_000_000)
         model.setVolume(0.25); model.pause()
@@ -206,10 +207,29 @@ final class StudioTests: XCTestCase {
         // The rebuild task starts on the next main actor turn.
         try await Task.sleep(nanoseconds: 50_000_000)
         for _ in 0..<200 {
-            if !model.rendering { return }
+            if !model.rendering && model.playerReady { return }
             try await Task.sleep(nanoseconds: 50_000_000)
         }
-        XCTFail("Preview did not finish")
+        XCTFail("Preview did not finish: " + model.progress)
+    }
+    @MainActor func testThumbnailRefreshesAfterTrimmingSourceStart() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let red = root.appendingPathComponent("red.mov"), blue = root.appendingPathComponent("blue.mov")
+        try await TestMedia.video(to: red, color: .red, duration: 1)
+        try await TestMedia.video(to: blue, color: .blue, duration: 1)
+        var seed = StudioProject(); seed.clips = [VideoSegment(url: red, start: 0, end: 1), VideoSegment(url: blue, start: 0, end: 1)]
+        let source = root.appendingPathComponent("combined.mp4")
+        let rendered = try await MediaComposer.build(seed)
+        try await MediaComposer.export(rendered, to: source)
+        let model = EditorModel(store: ProjectStore(root: root)); defer { model.close() }
+        await model.add(url: source); try await waitForPreview(model); await model.loadThumbnails()
+        let id = model.clips[0].id
+        let first = try XCTUnwrap(model.thumbnails[id]?.cgImage)
+        XCTAssertGreaterThan(pixel(first, x: first.width / 2, y: first.height / 2)[0], 180)
+        model.trim(id, start: 1.2)
+        try await waitForPreview(model); await model.loadThumbnails()
+        let second = try XCTUnwrap(model.thumbnails[id]?.cgImage)
+        XCTAssertGreaterThan(pixel(second, x: second.width / 2, y: second.height / 2)[2], 180)
     }
     @MainActor func testInvalidImportDoesNotPolluteProjectOrMedia() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }

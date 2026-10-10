@@ -23,6 +23,10 @@ final class StudioUITests: XCTestCase {
         play.tap()
         app.buttons["duplicateClip"].tap()
         XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn")
+        app.buttons["clip_1"].tap()
+        expectation(for: NSPredicate(format: "label == '00:02.0'"), evaluatedWith: time); waitForExpectations(timeout: 10)
+        app.buttons["clip_0"].tap()
+        expectation(for: NSPredicate(format: "label == '00:00.0'"), evaluatedWith: time); waitForExpectations(timeout: 10)
         app.buttons["undo"].tap(); XCTAssertEqual(app.staticTexts["clipCount"].label, "1 đoạn")
         app.buttons["redo"].tap(); XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn")
         XCUIDevice.shared.orientation = .landscapeLeft

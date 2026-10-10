@@ -12,6 +12,7 @@ import Photos
     @Published var selected: UUID?
     @Published var playhead = 0.0
     @Published var playing = false
+    @Published var playerReady = false
     @Published var thumbnails: [UUID: UIImage] = [:]
     @Published private(set) var undoStack: [StudioProject] = []
     @Published private(set) var redoStack: [StudioProject] = []
@@ -21,8 +22,10 @@ import Photos
     private var observer: Any?
     private var observedPlayer: AVPlayer?
     private var endObserver: NSObjectProtocol?
+    private var statusObserver: NSKeyValueObservation?
     private var seekRevision = 0
     private var playbackRevision = 0
+    private var thumbnailStarts: [UUID: Double] = [:]
     var clips: [VideoSegment] { project.clips }
     var duration: Double { project.duration }
     var selectedClip: VideoSegment? { clips.first { $0.id == selected } }
@@ -39,6 +42,7 @@ import Photos
     private func detachObserver() {
         if let token = observer { observedPlayer?.removeTimeObserver(token) }
         if let token = endObserver { NotificationCenter.default.removeObserver(token) }
+        statusObserver?.invalidate(); statusObserver = nil
         observer = nil; observedPlayer = nil; endObserver = nil
     }
     func saveProject() {
@@ -74,7 +78,7 @@ import Photos
         do {
             try store.prepare()
             let destination = store.mediaDirectory.appendingPathComponent(UUID().uuidString + "." + (url.pathExtension.isEmpty ? "mov" : url.pathExtension))
-            try FileManager.default.copyItem(at: url, to: destination); copy = destination
+            try await Task.detached(priority: .userInitiated) { try FileManager.default.copyItem(at: url, to: destination) }.value; copy = destination
             let asset = AVURLAsset(url: destination)
             let length = try await asset.load(.duration).seconds
             guard length.isFinite, length > 0.05 else { throw StudioError.message("Tệp quá ngắn hoặc không hợp lệ") }
@@ -88,7 +92,7 @@ import Photos
             case .audio: project.audio.append(AudioSegment(url: destination, offset: playhead, sourceDuration: length))
             case .overlay: project.overlays.append(OverlaySegment(clip: clip, offset: playhead))
             }
-            undoStack.append(prior); redoStack.removeAll(); finishEdit()
+            undoStack.append(prior); if undoStack.count > 50 { undoStack.removeFirst() }; redoStack.removeAll(); finishEdit()
             progress = "Đã nhập và lưu dự án"
         } catch { if let copy { try? FileManager.default.removeItem(at: copy) }; progress = "Không nhập được: " + error.localizedDescription }
     }
@@ -123,7 +127,7 @@ import Photos
         player?.seek(to: MediaComposer.time(playhead), toleranceBefore: .zero, toleranceAfter: .zero)
     }
     func togglePlayback() {
-        guard !rendering, !busy, let player else { return }
+        guard !rendering, !busy, playerReady, let player else { return }
         playbackRevision += 1
         if playing { player.pause(); playing = false } else {
             if playhead >= duration - 0.05 { seek(0) }; player.play(); playing = true
@@ -133,16 +137,24 @@ import Photos
     func refreshPreview() async {
         let token = revision, snapshot = project
         let oldTime = playhead, oldSeek = seekRevision, shouldResume = playing, oldPlayback = playbackRevision
-        rendering = true
+        rendering = true; playerReady = false
         defer { if token == revision { rendering = false } }
         do {
             if snapshot.clips.isEmpty { detachObserver(); player?.pause(); player = nil; playing = false; return }
             let rendered = try await MediaComposer.build(snapshot)
             guard token == revision, !Task.isCancelled else { return }
-            let item = AVPlayerItem(asset: rendered.composition); item.videoComposition = rendered.video; item.audioMix = rendered.audio
+            let item = AVPlayerItem(asset: rendered.composition); item.videoComposition = rendered.video
+            if !rendered.audio.inputParameters.isEmpty { item.audioMix = rendered.audio }
             let next = AVPlayer(playerItem: item)
             detachObserver(); player?.pause(); player = next
             observedPlayer = next
+            statusObserver = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+                Task { @MainActor in
+                    guard let self, self.player?.currentItem === item else { return }
+                    self.playerReady = item.status == .readyToPlay
+                    if item.status == .failed { self.pause(); self.progress = "Lỗi preview: " + (item.error?.localizedDescription ?? "Không đọc được video") }
+                }
+            }
             observer = next.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] time in
                 Task { @MainActor in
                     guard let self, self.player === next else { return }
@@ -165,11 +177,19 @@ import Photos
     }
     func loadThumbnails() async {
         let segments = clips + project.overlays.map(\.clip)
-        for clip in segments where thumbnails[clip.id] == nil {
+        for clip in segments where thumbnails[clip.id] == nil || thumbnailStarts[clip.id] != clip.start {
             if Task.isCancelled { return }
             let generator = AVAssetImageGenerator(asset: AVURLAsset(url: clip.url))
             generator.appliesPreferredTrackTransform = true; generator.maximumSize = CGSize(width: 240, height: 160)
-            do { let (cgImage, _) = try await generator.image(at: MediaComposer.time(clip.start)); thumbnails[clip.id] = UIImage(cgImage: cgImage) } catch { /* Missing media is reported by preview. */ }
+            generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+            do {
+                let (cgImage, _) = try await generator.image(at: MediaComposer.time(clip.start))
+                guard !Task.isCancelled else { return }
+                let current = clips + project.overlays.map(\.clip)
+                if current.contains(where: { $0.id == clip.id && $0.start == clip.start && $0.url == clip.url }) {
+                    thumbnails[clip.id] = UIImage(cgImage: cgImage); thumbnailStarts[clip.id] = clip.start
+                }
+            } catch { /* Missing media is reported by preview. */ }
         }
     }
     func export() async {

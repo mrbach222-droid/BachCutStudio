@@ -75,6 +75,10 @@ enum MediaComposer {
             instructions.append(instruction)
             cursor += clip.duration
         }
+        if baseAudio.timeRange.duration.seconds == 0 {
+            composition.removeTrack(baseAudio)
+            mixes.removeAll()
+        }
         // V2 picture-in-picture is an actual second video track, included in preview and export.
         var overlayLayers: [(Double, Double, AVMutableVideoCompositionLayerInstruction)] = []
         for overlay in project.overlays where overlay.offset < project.duration {
@@ -124,7 +128,8 @@ enum MediaComposer {
     static func export(_ rendered: RenderedProject, to url: URL) async throws {
         guard let session = AVAssetExportSession(asset: rendered.composition, presetName: AVAssetExportPresetHighestQuality) else { throw StudioError.message("Không khởi tạo được bộ xuất") }
         session.outputURL = url; session.outputFileType = .mp4; session.shouldOptimizeForNetworkUse = true
-        session.videoComposition = rendered.video; session.audioMix = rendered.audio
+        session.videoComposition = rendered.video
+        if !rendered.audio.inputParameters.isEmpty { session.audioMix = rendered.audio }
         await session.export()
         guard session.status == .completed else {
             try? FileManager.default.removeItem(at: url)
