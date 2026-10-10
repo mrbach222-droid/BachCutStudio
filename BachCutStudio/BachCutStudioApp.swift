@@ -9,6 +9,8 @@ import UniformTypeIdentifiers
 struct EditorScreen: View {
     @StateObject var model: EditorModel
     @Environment(\.scenePhase) private var phase
+    @Environment(\.verticalSizeClass) private var verticalClass
+    @Environment(\.dismiss) private var dismiss
     @State private var importing = false
     @State private var importKind: EditorModel.ImportKind = .video
     @State private var zoom = 24.0
@@ -16,7 +18,7 @@ struct EditorScreen: View {
     init(project: StudioProject, store: ProjectStore = ProjectStore()) { _model = StateObject(wrappedValue: EditorModel(project: project, store: store)) }
     var body: some View {
         GeometryReader { geo in
-            let wide = geo.size.width > geo.size.height
+            let wide = verticalClass == .compact
             VStack(spacing: 8) {
                 header
                 if wide {
@@ -33,7 +35,17 @@ struct EditorScreen: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .navigationTitle("Studio")
-        .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Lưu") { model.saveProject(); model.progress = "Đã lưu dự án" }.accessibilityIdentifier("saveProject") } }
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button { dismiss() } label: { Label("Quay lại", systemImage: "chevron.left").labelStyle(.iconOnly) }.accessibilityIdentifier("backEditor")
+            }
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                Button("Lưu") { if model.saveProject() { model.progress = "Đã lưu dự án" } }.accessibilityIdentifier("saveProject")
+                Button("Xuất") { Task { await model.export() } }
+                    .disabled(model.clips.isEmpty || model.rendering || model.busy).accessibilityIdentifier("exportVideo")
+            }
+        }
         .task { await model.start() }
         .onDisappear { model.saveProject(); model.close() }
         .onChange(of: phase) { if $0 != .active { model.saveProject(); model.pause() } }
@@ -61,7 +73,7 @@ struct EditorScreen: View {
             if let player = model.player { VideoPlayerView(player: player).clipShape(RoundedRectangle(cornerRadius: 14)) }
             else { VStack(spacing: 8) { Image(systemName: "film.stack").font(.largeTitle); Text("Thêm video để bắt đầu").font(.subheadline) }.foregroundStyle(.gray) }
             if model.rendering { ProgressView().padding(12).background(.ultraThinMaterial).clipShape(Circle()) }
-        }.accessibilityIdentifier("videoPreview")
+        }.accessibilityElement(children: .contain).accessibilityIdentifier("videoPreview")
     }
     var transport: some View {
         VStack(spacing: 4) {
@@ -85,8 +97,6 @@ struct EditorScreen: View {
                 Button { importKind = .video; importing = true } label: { Label("Tệp", systemImage: "folder") }
                 Button { importKind = .overlay; importing = true } label: { Label("Lớp phủ", systemImage: "square.on.square") }.disabled(model.clips.isEmpty)
                 Button { importKind = .audio; importing = true } label: { Label("Nhạc", systemImage: "music.note") }.disabled(model.clips.isEmpty)
-                Button { Task { await model.export() } } label: { Label("Xuất MP4", systemImage: "square.and.arrow.up") }
-                    .disabled(model.clips.isEmpty || model.rendering).accessibilityIdentifier("exportVideo")
             }.font(.caption.bold()).buttonStyle(.bordered).disabled(model.busy)
         }.padding(.vertical, 5)
     }

@@ -45,8 +45,8 @@ import Photos
         statusObserver?.invalidate(); statusObserver = nil
         observer = nil; observedPlayer = nil; endObserver = nil
     }
-    func saveProject() {
-        do { try store.save(project) } catch { progress = "Không lưu được dự án: " + error.localizedDescription }
+    @discardableResult func saveProject() -> Bool {
+        do { try store.save(project); return true } catch { progress = "Không lưu được dự án: " + error.localizedDescription; return false }
     }
     func rename(_ name: String) { project.name = name; project.modified = Date(); saveProject() }
     private func edit(_ mutation: (inout StudioProject) -> Void) {

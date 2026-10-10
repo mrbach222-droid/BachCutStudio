@@ -92,8 +92,8 @@ struct StudioHome: View {
                         #if DEBUG
                         if ProcessInfo.processInfo.arguments.contains("--uitesting-fixture"), try store.list().isEmpty {
                             let media = store.mediaDirectory.appendingPathComponent("fixture.mov")
-                            try await TestMedia.video(to: media, color: .red, duration: 2)
-                            var p = StudioProject(); p.name = "Kiểm thử Studio"; p.clips = [VideoSegment(url: media, start: 0, end: 2)]
+                            try await TestMedia.video(to: media, color: .red, duration: 8)
+                            var p = StudioProject(); p.name = "Kiểm thử Studio"; p.clips = [VideoSegment(url: media, start: 0, end: 8)]
                             try store.save(p)
                         }
                         #endif

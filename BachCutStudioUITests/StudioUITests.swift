@@ -7,7 +7,10 @@ final class StudioUITests: XCTestCase {
         XCTAssertTrue(app.buttons["newProject"].waitForExistence(timeout: 20)); app.buttons["newProject"].tap()
         XCTAssertTrue(app.textFields["projectName"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["exportVideo"].isEnabled)
+        let preview = app.descendants(matching: .any).matching(identifier: "videoPreview").firstMatch
+        let width = preview.frame.width
         app.textFields["projectName"].tap()
+        XCTAssertEqual(preview.frame.width, width, accuracy: 2, "Keyboard must not switch portrait into landscape layout")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.buttons["newProject"].waitForExistence(timeout: 10))
     }
@@ -24,7 +27,7 @@ final class StudioUITests: XCTestCase {
         app.buttons["duplicateClip"].tap()
         XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn")
         app.buttons["clip_1"].tap()
-        expectation(for: NSPredicate(format: "label == '00:02.0'"), evaluatedWith: time); waitForExpectations(timeout: 10)
+        expectation(for: NSPredicate(format: "label == '00:08.0'"), evaluatedWith: time); waitForExpectations(timeout: 10)
         app.buttons["clip_0"].tap()
         expectation(for: NSPredicate(format: "label == '00:00.0'"), evaluatedWith: time); waitForExpectations(timeout: 10)
         app.buttons["undo"].tap(); XCTAssertEqual(app.staticTexts["clipCount"].label, "1 đoạn")

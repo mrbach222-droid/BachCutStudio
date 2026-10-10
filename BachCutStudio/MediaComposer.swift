@@ -43,6 +43,7 @@ enum MediaComposer {
         let baseMix = AVMutableAudioMixInputParameters(track: baseAudio)
         var mixes: [AVAudioMixInputParameters] = [baseMix]
         var cursor = 0.0
+        var hasSourceAudio = false
         for clip in project.clips {
             let asset = AVURLAsset(url: clip.url)
             let sourceDuration = try await asset.load(.duration).seconds
@@ -62,6 +63,7 @@ enum MediaComposer {
                 if intersection.duration.seconds > 0 {
                     let destination = cursor + (intersection.start.seconds - clip.start) / clip.speed
                     try baseAudio.insertTimeRange(intersection, of: sound, at: time(destination))
+                    hasSourceAudio = true
                     baseAudio.scaleTimeRange(CMTimeRange(start: time(destination), duration: intersection.duration), toDuration: time(intersection.duration.seconds / clip.speed))
                 }
             }
@@ -75,7 +77,7 @@ enum MediaComposer {
             instructions.append(instruction)
             cursor += clip.duration
         }
-        if baseAudio.timeRange.duration.seconds == 0 {
+        if !hasSourceAudio {
             composition.removeTrack(baseAudio)
             mixes.removeAll()
         }
