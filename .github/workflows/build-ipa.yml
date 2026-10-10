@@ -48,9 +48,9 @@ jobs:
           test -s Payload/BachCutStudio.app/BachCutStudio
           test -s Payload/BachCutStudio.app/Assets.car
           /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Payload/BachCutStudio.app/Info.plist
-          zip -qry BachCutStudio_v0.5.0_unsigned.ipa Payload
-          unzip -t BachCutStudio_v0.5.0_unsigned.ipa
-          shasum -a 256 BachCutStudio_v0.5.0_unsigned.ipa > SHA256SUMS.txt
+          zip -qry BachCutStudio_v0.6.0_unsigned.ipa Payload
+          unzip -t BachCutStudio_v0.6.0_unsigned.ipa
+          shasum -a 256 BachCutStudio_v0.6.0_unsigned.ipa > SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -64,22 +64,22 @@ jobs:
           retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
-          name: BachCutStudio-v0.5.0-unsigned-IPA
+          name: BachCutStudio-v0.6.0-unsigned-IPA
           path: |
-            BachCutStudio_v0.5.0_unsigned.ipa
+            BachCutStudio_v0.6.0_unsigned.ipa
             SHA256SUMS.txt
           retention-days: 30
       - name: Publish tested IPA
         if: github.ref == 'refs/heads/main' && success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.5.0
-          name: BáchCut Studio v0.5.0
+          tag_name: v0.6.0
+          name: BáchCut Studio v0.6.0
           prerelease: true
           files: |
-            BachCutStudio_v0.5.0_unsigned.ipa
+            BachCutStudio_v0.6.0_unsigned.ipa
             SHA256SUMS.txt
           body: |
-            Centered native timeline with drag-to-scrub and long-press clip reorder. MP4/MOV H.264/AAC with resolution, frame rate and bitrate controls; animated GIF export with cancellation. Multi-project autosave, undo/redo, trim/split, speed, volume, PiP, music and Landscape Pro.
+            Timeline filmstrip samples successive source frames per clip for finding scenes while scrubbing. Centered playhead, long-press clip reorder, MP4/MOV/GIF export, multi-project autosave, undo/redo, trim/split, PiP, music and Landscape Pro.
             Release is produced only after simulator unit/integration/UI tests pass. Unsigned IPA: sign before installation. Physical-device verification is still required before a production release.
           overwrite_files: true

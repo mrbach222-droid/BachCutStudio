@@ -16,7 +16,7 @@ import Photos
     @Published var playhead = 0.0
     @Published var playing = false
     @Published var playerReady = false
-    @Published var thumbnails: [UUID: UIImage] = [:]
+    @Published var thumbnails: [UUID: [UIImage]] = [:]
     @Published private(set) var undoStack: [StudioProject] = []
     @Published private(set) var redoStack: [StudioProject] = []
     let store: ProjectStore
@@ -32,7 +32,7 @@ import Photos
     private var pendingSeek: Double?
     private var seekOperation: UUID?
     private var previewURL: URL?
-    private var thumbnailStarts: [UUID: Double] = [:]
+    private var thumbnailSources: [UUID: VideoSegment] = [:]
     #if DEBUG
     private var lastEvent = "init"
     var debugInfo: String { "ready=\(playerReady) rendering=\(rendering) busy=\(busy) rate=\(player?.rate ?? -1) control=\(player?.timeControlStatus.rawValue ?? -1) wait=\(player?.reasonForWaitingToPlay?.rawValue ?? "none") status=\(player?.currentItem?.status.rawValue ?? -1) time=\(player?.currentTime().seconds ?? -1) event=\(lastEvent) observer=\(observer != nil) same=\(observedPlayer === player) duration=\(player?.currentItem?.duration.seconds ?? -1)" }
@@ -236,20 +236,30 @@ import Photos
     func loadThumbnails() async {
         let segments = clips + project.overlays.map(\.clip)
         let activeIDs = Set(segments.map(\.id))
-        thumbnails = thumbnails.filter { activeIDs.contains($0.key) }; thumbnailStarts = thumbnailStarts.filter { activeIDs.contains($0.key) }
-        for clip in segments where thumbnails[clip.id] == nil || thumbnailStarts[clip.id] != clip.start {
+        thumbnails = thumbnails.filter { activeIDs.contains($0.key) }
+        thumbnailSources = thumbnailSources.filter { activeIDs.contains($0.key) }
+        for clip in segments where thumbnails[clip.id] == nil || (thumbnailSources[clip.id].map { $0.url != clip.url || $0.start != clip.start || $0.end != clip.end || $0.speed != clip.speed } ?? true) {
             if Task.isCancelled { return }
             let generator = AVAssetImageGenerator(asset: AVURLAsset(url: clip.url))
-            generator.appliesPreferredTrackTransform = true; generator.maximumSize = CGSize(width: 240, height: 160)
-            generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
-            do {
-                let (cgImage, _) = try await generator.image(at: MediaComposer.time(clip.start))
-                guard !Task.isCancelled else { return }
-                let current = clips + project.overlays.map(\.clip)
-                if current.contains(where: { $0.id == clip.id && $0.start == clip.start && $0.url == clip.url }) {
-                    thumbnails[clip.id] = UIImage(cgImage: cgImage); thumbnailStarts[clip.id] = clip.start
-                }
-            } catch { /* Missing media is reported by preview. */ }
+            generator.appliesPreferredTrackTransform = true; generator.maximumSize = CGSize(width: 128, height: 96)
+            // Neighboring frames can share a keyframe. Only the final scrub uses an exact seek.
+            generator.requestedTimeToleranceBefore = CMTime(value: 1, timescale: 4)
+            generator.requestedTimeToleranceAfter = CMTime(value: 1, timescale: 4)
+            let count = min(20, max(1, Int(ceil(clip.duration / 1.25))))
+            var frames: [UIImage] = []
+            for index in 0..<count {
+                if Task.isCancelled { return }
+                let sourceTime = clip.start + (Double(index) + 0.5) / Double(count) * (clip.end - clip.start)
+                do {
+                    let (cgImage, _) = try await generator.image(at: MediaComposer.time(sourceTime))
+                    frames.append(UIImage(cgImage: cgImage))
+                } catch { break /* Missing media is reported by preview. */ }
+            }
+            guard !Task.isCancelled else { return }
+            let current = clips + project.overlays.map(\.clip)
+            if !frames.isEmpty, current.contains(where: { $0.id == clip.id && $0.url == clip.url && $0.start == clip.start && $0.end == clip.end && $0.speed == clip.speed }) {
+                thumbnails[clip.id] = frames; thumbnailSources[clip.id] = clip
+            }
         }
     }
     func startExport(options: ExportOptions) { guard !busy else { return }; exportTask = Task { await export(options: options) } }

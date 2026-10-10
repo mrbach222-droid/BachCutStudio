@@ -225,11 +225,15 @@ final class StudioTests: XCTestCase {
         let model = EditorModel(store: ProjectStore(root: root)); defer { model.close() }
         await model.add(url: source); try await waitForPreview(model); await model.loadThumbnails()
         let id = model.clips[0].id
-        let first = try XCTUnwrap(model.thumbnails[id]?.cgImage)
+        let initialFrames = try XCTUnwrap(model.thumbnails[id])
+        XCTAssertEqual(initialFrames.count, 2)
+        let first = try XCTUnwrap(initialFrames.first?.cgImage)
         XCTAssertGreaterThan(pixel(first, x: first.width / 2, y: first.height / 2)[0], 180)
+        let last = try XCTUnwrap(initialFrames.last?.cgImage)
+        XCTAssertGreaterThan(pixel(last, x: last.width / 2, y: last.height / 2)[2], 180)
         model.trim(id, start: 1.2)
         try await waitForPreview(model); await model.loadThumbnails()
-        let second = try XCTUnwrap(model.thumbnails[id]?.cgImage)
+        let second = try XCTUnwrap(model.thumbnails[id]?.first?.cgImage)
         XCTAssertGreaterThan(pixel(second, x: second.width / 2, y: second.height / 2)[2], 180)
     }
     @MainActor func testInvalidImportDoesNotPolluteProjectOrMedia() async throws {

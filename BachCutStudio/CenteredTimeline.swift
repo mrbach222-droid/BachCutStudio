@@ -12,7 +12,7 @@ struct TimelineTrack {
 struct CenteredTimeline: UIViewRepresentable {
     let project: StudioProject
     let selected: UUID?
-    let thumbnails: [UUID: UIImage]
+    let thumbnails: [UUID: [UIImage]]
     let zoom: Double
     let playhead: Double
     let enabled: Bool
@@ -39,7 +39,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     private let line = UIView()
     private var clips: [VideoSegment] = []
     private var selected: UUID?
-    private var thumbnails: [UUID: UIImage] = [:]
+    private var thumbnails: [UUID: [UIImage]] = [:]
     private var zoom = 24.0
     private var time = 0.0
     private var duration = 0.0
@@ -86,7 +86,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         }
         updateMarks()
     }
-    func apply(project: StudioProject, selected: UUID?, thumbnails: [UUID: UIImage], zoom: Double, playhead: Double, enabled: Bool) {
+    func apply(project: StudioProject, selected: UUID?, thumbnails: [UUID: [UIImage]], zoom: Double, playhead: Double, enabled: Bool) {
         let changed = clips != project.clips || self.zoom != zoom
         self.selected = selected; self.thumbnails = thumbnails; self.zoom = zoom
         duration = project.duration; time = playhead
@@ -168,7 +168,8 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
 
 private final class TimelineCell: UICollectionViewCell {
     private let label = UILabel()
-    private var sourceImage: UIImage?
+    private var sourceImages: [UIImage] = []
+    private var filmFrames: [UIImageView] = []
     override init(frame: CGRect) {
         super.init(frame: frame)
         contentView.clipsToBounds = true; contentView.layer.cornerRadius = 4
@@ -177,24 +178,35 @@ private final class TimelineCell: UICollectionViewCell {
         isAccessibilityElement = true; accessibilityTraits = .button
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func layoutSubviews() { super.layoutSubviews(); label.frame = CGRect(x: 4, y: 40, width: min(70, max(0, bounds.width - 8)), height: 18) }
-    func configure(_ clip: VideoSegment, index: Int, selected: Bool, image: UIImage?) {
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        label.frame = CGRect(x: 4, y: 40, width: min(70, max(0, bounds.width - 8)), height: 18)
+        for (index, frame) in filmFrames.enumerated() {
+            let width = bounds.width / CGFloat(filmFrames.count)
+            frame.frame = CGRect(x: CGFloat(index) * width, y: 0, width: width, height: bounds.height)
+        }
+    }
+    func configure(_ clip: VideoSegment, index: Int, selected: Bool, image: [UIImage]?) {
         label.text = formatTime(clip.duration)
         accessibilityIdentifier = "clip_\(index)"; accessibilityLabel = "Đoạn \(index + 1), \(formatTime(clip.duration))"
         contentView.layer.borderWidth = selected ? 3 : 1; contentView.layer.borderColor = selected ? UIColor.cyan.cgColor : UIColor.black.cgColor
-        if sourceImage !== image {
-            sourceImage = image
-            if let image {
-                let tile = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 60)).image { _ in
-                    let scale = max(80 / image.size.width, 60 / image.size.height)
-                    let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-                    image.draw(in: CGRect(x: (80 - size.width) / 2, y: (60 - size.height) / 2, width: size.width, height: size.height))
-                }
-                contentView.backgroundColor = UIColor(patternImage: tile)
-            } else { contentView.backgroundColor = UIColor(red: 0.12, green: 0.22, blue: 0.28, alpha: 1) }
+        let images = image ?? []
+        if sourceImages.count != images.count || zip(sourceImages, images).contains(where: { $0.0 !== $0.1 }) {
+            filmFrames.forEach { $0.removeFromSuperview() }; filmFrames.removeAll()
+            sourceImages = images
+            for frameImage in images {
+                let view = UIImageView(image: frameImage)
+                view.contentMode = .scaleAspectFill; view.clipsToBounds = true
+                contentView.insertSubview(view, at: 0); filmFrames.append(view)
+            }
+            setNeedsLayout()
         }
+        contentView.backgroundColor = UIColor(red: 0.12, green: 0.22, blue: 0.28, alpha: 1)
     }
-    override func prepareForReuse() { super.prepareForReuse(); sourceImage = nil; contentView.backgroundColor = .darkGray }
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        filmFrames.forEach { $0.removeFromSuperview() }; filmFrames.removeAll(); sourceImages.removeAll()
+    }
 }
 
 private final class TimelineMarks: UIView {
