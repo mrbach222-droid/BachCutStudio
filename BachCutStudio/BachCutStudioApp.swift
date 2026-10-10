@@ -113,7 +113,7 @@ struct VideoSegment: Identifiable {
 
 @main struct BachCutStudioApp: App {
     var body: some Scene {
-        WindowGroup { EditorScreen().preferredColorScheme(.dark) }
+        WindowGroup { StudioHome().preferredColorScheme(.dark) }
     }
 }
 
@@ -182,7 +182,8 @@ struct EditorScreen: View {
     var editingArea: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Button { importing = true } label: { Label("Thêm", systemImage: "plus") }
+                LibraryVideoButton(model: model)
+                Button { importing = true } label: { Label("Tệp", systemImage: "folder") }
                 Button { Task { await model.export() } } label: { Label("Xuất MP4", systemImage: "square.and.arrow.up") }
                     .disabled(model.clips.isEmpty || model.busy)
                 if let url = model.exportedURL {
@@ -192,7 +193,7 @@ struct EditorScreen: View {
             .buttonStyle(.borderedProminent)
             .tint(.cyan)
             HStack {
-                Text("TIMELINE · V1").font(.caption.bold()).foregroundStyle(.gray)
+                Text("TIMELINE · VIDEO").font(.caption.bold()).foregroundStyle(.gray)
                 Spacer()
                 Image(systemName: "minus.magnifyingglass")
                 Slider(value: $zoom, in: 3...32).frame(maxWidth: 140)
@@ -233,7 +234,7 @@ struct EditorScreen: View {
                 Image(systemName: "waveform").foregroundStyle(.green)
                 Text("A1 · Âm thanh nguồn").font(.caption).foregroundStyle(.gray)
                 Spacer()
-                Text("Nhiều lớp: sắp ra mắt").font(.caption2).foregroundStyle(.secondary)
+                Text("Cắt · Ghép · Sắp xếp").font(.caption2).foregroundStyle(.secondary)
             }
             .frame(height: 34)
             .padding(.horizontal, 8)
@@ -257,7 +258,7 @@ struct EditorScreen: View {
                     .onDelete(perform: model.delete)
                 }
                 .listStyle(.plain)
-                .frame(maxHeight: 125)
+                .frame(maxHeight: 110)
             }
         }
     }
