@@ -3,8 +3,8 @@ import AVFoundation
 import UniformTypeIdentifiers
 import UIKit
 
-struct VideoSegment: Identifiable {
-    let id = UUID()
+struct VideoSegment: Identifiable, Codable {
+    var id = UUID()
     var url: URL
     var start: Double
     var end: Double
@@ -19,11 +19,40 @@ struct VideoSegment: Identifiable {
     @Published var exportedURL: URL?
     @Published var selected: UUID?
     var duration: Double { clips.reduce(0) { $0 + $1.duration } }
+    @Published var projectName = "Dự án mới"
+    private var projectDirectory: URL {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Media", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+    private var projectURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("bachcut-project.json")
+    }
+    struct SavedProject: Codable {
+        var name: String
+        var clips: [VideoSegment]
+    }
+    func saveProject() {
+        let record = SavedProject(name: projectName, clips: clips)
+        do {
+            let data = try JSONEncoder().encode(record)
+            try data.write(to: projectURL, options: .atomic)
+            progress = "Đã lưu dự án"
+        } catch { progress = "Lỗi lưu dự án: " + error.localizedDescription }
+    }
+    func restoreProject() async {
+        guard let data = try? Data(contentsOf: projectURL),
+              let record = try? JSONDecoder().decode(SavedProject.self, from: data) else { return }
+        projectName = record.name
+        clips = record.clips.filter { FileManager.default.fileExists(atPath: $0.url.path) }
+        selected = clips.first?.id
+        await preview()
+    }
 
     func add(url: URL) async {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
-        let copy = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "." + url.pathExtension)
+        let copy = projectDirectory.appendingPathComponent(UUID().uuidString + "." + (url.pathExtension.isEmpty ? "mov" : url.pathExtension))
         do {
             try FileManager.default.copyItem(at: url, to: copy)
             let asset = AVURLAsset(url: copy)
@@ -32,12 +61,14 @@ struct VideoSegment: Identifiable {
             guard length.isFinite && length > 0 else { progress = "Video không hợp lệ"; return }
             clips.append(VideoSegment(url: copy, start: 0, end: length))
             selected = clips.last?.id
+            saveProject()
             await preview()
         } catch { progress = "Không nhập được video: \(error.localizedDescription)" }
     }
 
     func move(_ offsets: IndexSet, to destination: Int) {
         clips.move(fromOffsets: offsets, toOffset: destination)
+        saveProject()
         Task { await preview() }
     }
     func delete(at offsets: IndexSet) {
@@ -148,6 +179,7 @@ struct EditorScreen: View {
     @StateObject private var model = EditorModel()
     @State private var importing = false
     @State private var zoom: Double = 10
+    @State private var showProjectName = false
     private var active: VideoSegment? { model.clips.first(where: { $0.id == model.selected }) }
 
     var body: some View {
@@ -171,6 +203,7 @@ struct EditorScreen: View {
             .padding(10)
             .background(Color(red: 0.045, green: 0.055, blue: 0.09))
         }
+        .task { await model.restoreProject() }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.movie, .video, .mpeg4Movie], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result {
                 Task { for url in urls { await model.add(url: url) } }
@@ -208,6 +241,13 @@ struct EditorScreen: View {
 
     var editingArea: some View {
         VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                TextField("Tên dự án", text: $model.projectName)
+                    .font(.subheadline.weight(.semibold))
+                    .textFieldStyle(.roundedBorder)
+                Button { model.saveProject() } label: { Image(systemName: "square.and.arrow.down") }
+                    .accessibilityLabel("Lưu dự án")
+            }
             HStack(spacing: 8) {
                 LibraryVideoButton(model: model)
                 Button { importing = true } label: { Label("Tệp", systemImage: "folder") }
