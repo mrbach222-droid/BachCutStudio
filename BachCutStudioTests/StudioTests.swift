@@ -414,6 +414,15 @@ final class StudioTests: XCTestCase {
             let size = try await track.load(.naturalSize), rate = try await track.load(.nominalFrameRate)
             XCTAssertEqual(size.height, CGFloat(resolution)); XCTAssertEqual(size.width, CGFloat((Double(resolution) * 16 / 9 / 2).rounded() * 2))
             XCTAssertEqual(Double(rate), Double(fps), accuracy: 0.1)
+            let reader = try AVAssetReader(asset: asset)
+            let outputFrames = AVAssetReaderTrackOutput(track: track, outputSettings: nil); reader.add(outputFrames)
+            XCTAssertTrue(reader.startReading())
+            var count = 0
+            while let sample = outputFrames.copyNextSampleBuffer() {
+                XCTAssertEqual(CMSampleBufferGetPresentationTimeStamp(sample).seconds, Double(count) / Double(fps), accuracy: 0.0001)
+                count += 1
+            }
+            XCTAssertEqual(count, Int((0.2 * Double(fps)).rounded())); XCTAssertEqual(reader.status, .completed)
             let descriptions = try await track.load(.formatDescriptions)
             XCTAssertEqual(CMFormatDescriptionGetMediaSubType(descriptions[0]), kCMVideoCodecType_H264)
             let generator = AVAssetImageGenerator(asset: asset); generator.maximumSize = CGSize(width: 80, height: 80)

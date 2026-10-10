@@ -42,6 +42,8 @@ final class ConfiguredExporter: @unchecked Sendable {
         guard writer.canApply(outputSettings: settings, forMediaType: .video) else { throw StudioError.message("Thiết bị không hỗ trợ chất lượng đã chọn. Hãy giảm độ phân giải hoặc fps.") }
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: settings); videoInput.expectsMediaDataInRealTime = false
         guard writer.canAdd(videoInput) else { throw StudioError.message("Không tạo được kênh xuất video") }; writer.add(videoInput)
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: videoInput, sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA, kCVPixelBufferWidthKey as String: Int(rendered.video.renderSize.width), kCVPixelBufferHeightKey as String: Int(rendered.video.renderSize.height)])
+        let frames = FrameResampler(output: video)
         var audioOutput: AVAssetReaderAudioMixOutput?
         var audioInput: AVAssetWriterInput?
         let tracks = rendered.composition.tracks(withMediaType: .audio)
@@ -58,17 +60,25 @@ final class ConfiguredExporter: @unchecked Sendable {
         var videoDone = false, audioDone = audioInput == nil
         var lastProgress = 0.0
         let length = rendered.composition.duration.seconds
+        let frameCount = Int(ceil(length * Double(options.fps) - 0.000001))
+        var frameIndex = 0
         while !videoDone || !audioDone {
             try Task.checkCancellation()
             guard writer.status == .writing, reader.status != .failed else { throw writer.error ?? reader.error ?? StudioError.message("Xuất bị gián đoạn") }
             var advanced = false
             if !videoDone && videoInput.isReadyForMoreMediaData {
                 try autoreleasepool {
-                    if let sample = video.copyNextSampleBuffer() {
-                        guard videoInput.append(sample) else { throw writer.error ?? StudioError.message("Không ghi được khung hình") }
-                        let fraction = min(0.99, CMSampleBufferGetPresentationTimeStamp(sample).seconds / length)
+                    if frameIndex < frameCount {
+                        let stamp = CMTime(value: Int64(frameIndex), timescale: Int32(options.fps))
+                        guard let buffer = frames.buffer(at: stamp), adaptor.append(buffer, withPresentationTime: stamp) else { throw writer.error ?? reader.error ?? StudioError.message("Không ghi được khung hình") }
+                        frameIndex += 1
+                        let fraction = min(0.99, Double(frameIndex) / Double(frameCount))
                         if fraction - lastProgress >= 0.01 { lastProgress = fraction; progress(fraction) }
-                    } else { videoInput.markAsFinished(); videoDone = true }
+                    } else {
+                        // Reader may retain a final source frame when downsampling. Exhaust it before checking completion.
+                        while video.copyNextSampleBuffer() != nil { try Task.checkCancellation() }
+                        videoInput.markAsFinished(); videoDone = true
+                    }
                 }
                 advanced = true
             }
@@ -108,4 +118,23 @@ final class ConfiguredExporter: @unchecked Sendable {
         }
         guard reader.status == .completed, frames == count, CGImageDestinationFinalize(destination) else { throw reader.error ?? StudioError.message("Không hoàn tất GIF") }
     }
+}
+
+// Hold one current frame and one look-ahead sample. The writer receives an explicit
+// constant frame-rate grid even when the reader emits only the source's 30 fps.
+private final class FrameResampler {
+    private let output: AVAssetReaderVideoCompositionOutput
+    private var current: CMSampleBuffer?
+    private var next: CMSampleBuffer?
+    private var ended = false
+    init(output: AVAssetReaderVideoCompositionOutput) { self.output = output }
+    func buffer(at time: CMTime) -> CVPixelBuffer? {
+        if current == nil { current = output.copyNextSampleBuffer() }
+        if next == nil && !ended { readNext() }
+        while let sample = next, CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), time) <= 0 {
+            current = sample; readNext()
+        }
+        return current.flatMap { CMSampleBufferGetImageBuffer($0) }
+    }
+    private func readNext() { next = output.copyNextSampleBuffer(); if next == nil { ended = true } }
 }
