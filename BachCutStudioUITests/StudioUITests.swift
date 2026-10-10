@@ -35,18 +35,37 @@ final class StudioUITests: XCTestCase {
         expectation(for: NSPredicate(format: "label == '00:00.0'"), evaluatedWith: time); waitForExpectations(timeout: 10)
         app.buttons["undo"].tap(); XCTAssertEqual(app.staticTexts["clipCount"].label, "1 đoạn")
         app.buttons["redo"].tap(); XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn")
-        XCUIDevice.shared.orientation = .landscapeLeft
+        rotateAndSettle(app, landscape: true)
         XCTAssertTrue(app.buttons["exportVideo"].waitForExistence(timeout: 10))
-        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "Landscape Pro"; shot.lifetime = .keepAlways; add(shot)
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); shot.name = "Landscape Pro"; shot.lifetime = .keepAlways; add(shot)
         XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn")
         let export = app.buttons["exportVideo"]
         expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: export); waitForExpectations(timeout: 20)
         export.tap()
         XCTAssertTrue(app.staticTexts["Đã xuất MP4 thành công"].waitForExistence(timeout: 40))
-        XCUIDevice.shared.orientation = .portrait
-        let portrait = XCTAttachment(screenshot: app.screenshot()); portrait.name = "Portrait editor"; portrait.lifetime = .keepAlways; add(portrait)
+        rotateAndSettle(app, landscape: false)
+        let portrait = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); portrait.name = "Portrait editor"; portrait.lifetime = .keepAlways; add(portrait)
         app.terminate(); app.launchArguments = ["--uitesting"]; app.launch()
         XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 20)); app.staticTexts["Kiểm thử Studio"].tap()
         XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn")
+    }
+
+    func rotateAndSettle(_ app: XCUIApplication, landscape: Bool) {
+        XCUIDevice.shared.orientation = landscape ? .landscapeLeft : .portrait
+        let window = app.windows.firstMatch
+        var previous = CGRect.zero
+        var stableSamples = 0
+        for _ in 0..<80 {
+            let frame = window.frame
+            let matches = landscape ? frame.width > frame.height : frame.height > frame.width
+            stableSamples = matches && frame == previous ? stableSamples + 1 : 0
+            if stableSamples >= 5 {
+                XCTAssertTrue(app.buttons["exportVideo"].isHittable, "Export must stay reachable after rotation")
+                return
+            }
+            previous = frame
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTFail("Window did not settle after rotation: \(window.frame)")
     }
 }
