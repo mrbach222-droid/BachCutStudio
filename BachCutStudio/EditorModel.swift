@@ -28,7 +28,7 @@ import Photos
     private var thumbnailStarts: [UUID: Double] = [:]
     #if DEBUG
     private var lastEvent = "init"
-    var debugInfo: String { "ready=\(playerReady) rendering=\(rendering) busy=\(busy) rate=\(player?.rate ?? -1) status=\(player?.currentItem?.status.rawValue ?? -1) time=\(player?.currentTime().seconds ?? -1) event=\(lastEvent)" }
+    var debugInfo: String { "ready=\(playerReady) rendering=\(rendering) busy=\(busy) rate=\(player?.rate ?? -1) control=\(player?.timeControlStatus.rawValue ?? -1) wait=\(player?.reasonForWaitingToPlay?.rawValue ?? "none") status=\(player?.currentItem?.status.rawValue ?? -1) time=\(player?.currentTime().seconds ?? -1) event=\(lastEvent)" }
     #endif
     private func recordEvent(_ event: String) {
         #if DEBUG
@@ -146,7 +146,7 @@ import Photos
         guard !rendering, !busy, playerReady, let player else { return }
         playbackRevision += 1
         if playing { player.pause(); playing = false } else {
-            if playhead >= duration - 0.05 { seek(0) }; player.play(); playing = true
+            if playhead >= duration - 0.05 { seek(0) }; player.playImmediately(atRate: 1); playing = true
         }
     }
     func pause() { recordEvent("pause"); playbackRevision += 1; player?.pause(); playing = false }
@@ -163,6 +163,7 @@ import Photos
             let item = AVPlayerItem(asset: rendered.composition); item.videoComposition = rendered.video
             if !rendered.audio.inputParameters.isEmpty { item.audioMix = rendered.audio }
             let next = AVPlayer(playerItem: item)
+            next.automaticallyWaitsToMinimizeStalling = false
             detachObserver(); player?.pause(); player = next
             observedPlayer = next
             statusObserver = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
@@ -186,7 +187,7 @@ import Photos
             let position = oldSeek == seekRevision ? oldTime : playhead
             await next.seek(to: MediaComposer.time(min(position, duration)), toleranceBefore: .zero, toleranceAfter: .zero)
             guard token == revision, !Task.isCancelled, player === next else { return }
-            if shouldResume && oldPlayback == playbackRevision { next.play(); playing = true }
+            if shouldResume && oldPlayback == playbackRevision { next.playImmediately(atRate: 1); playing = true }
         } catch {
             guard token == revision else { return }
             pause(); detachObserver(); player = nil; progress = "Không xem trước được: " + error.localizedDescription

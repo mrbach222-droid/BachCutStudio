@@ -23,6 +23,8 @@ jobs:
           SIMULATOR_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for v in d["devices"].values() for x in v if "iPhone" in x["name"]))')
           echo "SIMULATOR_ID=$SIMULATOR_ID" >> "$GITHUB_ENV"
           xcrun simctl boot "$SIMULATOR_ID" || true
+          xcrun simctl bootstatus "$SIMULATOR_ID" -b
+          open -a Simulator --args -CurrentDeviceUDID "$SIMULATOR_ID"
       - name: Test editing, media export and portrait-landscape UI
         run: |
           set -o pipefail
