@@ -22,8 +22,10 @@ final class StudioUITests: XCTestCase {
         expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
         play.tap()
         let time = app.staticTexts["playheadTime"]
-        expectation(for: NSPredicate(format: "label != '00:00.0'"), evaluatedWith: time); waitForExpectations(timeout: 10)
-        play.tap()
+        let advancing = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label != '00:00.0'"), object: time)
+        let result = XCTWaiter.wait(for: [advancing], timeout: 10)
+        XCTAssertEqual(result, .completed, app.staticTexts["playerDebug"].label)
+        if play.label == "Tạm dừng" { play.tap() }
         app.buttons["duplicateClip"].tap()
         XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn")
         app.buttons["clip_1"].tap()

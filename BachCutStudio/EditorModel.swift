@@ -26,6 +26,15 @@ import Photos
     private var seekRevision = 0
     private var playbackRevision = 0
     private var thumbnailStarts: [UUID: Double] = [:]
+    #if DEBUG
+    private var lastEvent = "init"
+    var debugInfo: String { "ready=\(playerReady) rendering=\(rendering) busy=\(busy) rate=\(player?.rate ?? -1) status=\(player?.currentItem?.status.rawValue ?? -1) time=\(player?.currentTime().seconds ?? -1) event=\(lastEvent)" }
+    #endif
+    private func recordEvent(_ event: String) {
+        #if DEBUG
+        lastEvent = event
+        #endif
+    }
     var clips: [VideoSegment] { project.clips }
     var duration: Double { project.duration }
     var selectedClip: VideoSegment? { clips.first { $0.id == selected } }
@@ -38,7 +47,12 @@ import Photos
         await refreshPreview()
         await loadThumbnails()
     }
-    func close() { player?.pause(); playing = false; detachObserver(); rebuildTask?.cancel() }
+    deinit {
+        if let observer { observedPlayer?.removeTimeObserver(observer) }
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        statusObserver?.invalidate(); rebuildTask?.cancel()
+    }
+    func close() { recordEvent("close"); player?.pause(); playing = false; detachObserver(); rebuildTask?.cancel() }
     private func detachObserver() {
         if let token = observer { observedPlayer?.removeTimeObserver(token) }
         if let token = endObserver { NotificationCenter.default.removeObserver(token) }
@@ -123,18 +137,21 @@ import Photos
     func audioVolume(_ id: UUID, value: Double) { edit { p in if let i = p.audio.firstIndex(where: { $0.id == id }) { p.audio[i].volume = min(1, max(0, value)) } } }
     func removeOverlay(_ id: UUID) { edit { $0.overlays.removeAll { $0.id == id } } }
     func seek(_ value: Double) {
+        recordEvent("seek")
         playhead = min(duration, max(0, value)); seekRevision += 1
         player?.seek(to: MediaComposer.time(playhead), toleranceBefore: .zero, toleranceAfter: .zero)
     }
     func togglePlayback() {
+        recordEvent("toggle")
         guard !rendering, !busy, playerReady, let player else { return }
         playbackRevision += 1
         if playing { player.pause(); playing = false } else {
             if playhead >= duration - 0.05 { seek(0) }; player.play(); playing = true
         }
     }
-    func pause() { playbackRevision += 1; player?.pause(); playing = false }
+    func pause() { recordEvent("pause"); playbackRevision += 1; player?.pause(); playing = false }
     func refreshPreview() async {
+        recordEvent("rebuild")
         let token = revision, snapshot = project
         let oldTime = playhead, oldSeek = seekRevision, shouldResume = playing, oldPlayback = playbackRevision
         rendering = true; playerReady = false

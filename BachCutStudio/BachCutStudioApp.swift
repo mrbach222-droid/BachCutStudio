@@ -38,7 +38,7 @@ struct EditorScreen: View {
         .navigationBarBackButtonHidden(true)
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) {
-                Button { dismiss() } label: { Label("Quay lại", systemImage: "chevron.left").labelStyle(.iconOnly) }.accessibilityIdentifier("backEditor")
+                Button { model.saveProject(); model.close(); dismiss() } label: { Label("Quay lại", systemImage: "chevron.left").labelStyle(.iconOnly) }.accessibilityIdentifier("backEditor")
             }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 Button("Lưu") { if model.saveProject() { model.progress = "Đã lưu dự án" } }.accessibilityIdentifier("saveProject")
@@ -47,7 +47,7 @@ struct EditorScreen: View {
             }
         }
         .task { await model.start() }
-        .onDisappear { model.saveProject(); model.close() }
+        .onDisappear { model.saveProject(); model.pause() }
         .onChange(of: phase) { if $0 != .active { model.saveProject(); model.pause() } }
         .fileImporter(isPresented: $importing, allowedContentTypes: importKind == .audio ? [.audio] : [.movie, .video], allowsMultipleSelection: true) { result in
             switch result {
@@ -76,13 +76,13 @@ struct EditorScreen: View {
         }.accessibilityElement(children: .contain).accessibilityIdentifier("videoPreview")
     }
     var transport: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 10) {
             HStack {
                 Text(formatTime(model.playhead)).font(.caption.monospacedDigit()).accessibilityIdentifier("playheadTime")
                 Spacer()
                 Button { model.seek(0) } label: { Image(systemName: "backward.end.fill") }.accessibilityLabel("Về đầu")
-                Button { model.togglePlayback() } label: { Image(systemName: model.playing ? "pause.fill" : "play.fill").frame(width: 36, height: 28) }
-                    .disabled(!model.playerReady || model.rendering || model.busy).accessibilityIdentifier("playPause")
+                Button { model.togglePlayback() } label: { Image(systemName: model.playing ? "pause.fill" : "play.fill").frame(width: 44, height: 44).contentShape(Rectangle()) }
+                    .disabled(!model.playerReady || model.rendering || model.busy).accessibilityIdentifier("playPause").accessibilityLabel(model.playing ? "Tạm dừng" : "Phát")
                 Spacer()
                 Text(formatTime(model.duration)).font(.caption.monospacedDigit()).accessibilityIdentifier("durationTime")
             }.foregroundStyle(.white).buttonStyle(.plain)
@@ -185,6 +185,9 @@ struct EditorScreen: View {
         VStack(alignment: .leading, spacing: 8) {
             if model.busy { HStack { ProgressView(); Text(model.progress).font(.caption) } }
             else if !model.progress.isEmpty { Text(model.progress).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("statusMessage") }
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--uitesting") { Text(model.debugInfo).font(.system(size: 8)).accessibilityIdentifier("playerDebug") }
+            #endif
             if let url = model.exportedURL {
                 HStack {
                     ShareLink(item: url) { Label("Chia sẻ / Lưu Tệp", systemImage: "square.and.arrow.up") }
@@ -220,8 +223,18 @@ struct TrimSheet: View {
         }.presentationDetents([.medium, .large])
     }
 }
-struct VideoPlayerView: UIViewControllerRepresentable {
+final class PlayerSurface: UIView {
+    override class var layerClass: AnyClass { AVPlayerLayer.self }
+    var videoLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+}
+struct VideoPlayerView: UIViewRepresentable {
     let player: AVPlayer
-    func makeUIViewController(context: Context) -> AVPlayerViewController { let vc = AVPlayerViewController(); vc.player = player; vc.showsPlaybackControls = false; return vc }
-    func updateUIViewController(_ vc: AVPlayerViewController, context: Context) { if vc.player !== player { vc.player = player } }
+    func makeUIView(context: Context) -> PlayerSurface {
+        let view = PlayerSurface()
+        view.backgroundColor = .black; view.isUserInteractionEnabled = false
+        view.videoLayer.videoGravity = .resizeAspect; view.videoLayer.player = player
+        return view
+    }
+    func updateUIView(_ view: PlayerSurface, context: Context) { if view.videoLayer.player !== player { view.videoLayer.player = player } }
+    static func dismantleUIView(_ view: PlayerSurface, coordinator: ()) { view.videoLayer.player = nil }
 }
