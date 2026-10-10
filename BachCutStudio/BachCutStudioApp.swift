@@ -54,6 +54,33 @@ struct VideoSegment: Identifiable {
         Task { await preview() }
     }
 
+    func removeSelected() {
+        guard let id = selected, let index = clips.firstIndex(where: { $0.id == id }) else { return }
+        clips.remove(at: index)
+        selected = clips.first?.id
+        Task { await preview() }
+    }
+    func duplicateSelected() {
+        guard let id = selected, let index = clips.firstIndex(where: { $0.id == id }) else { return }
+        let clip = clips[index]
+        let copy = VideoSegment(url: clip.url, start: clip.start, end: clip.end)
+        clips.insert(copy, at: index + 1)
+        selected = copy.id
+        Task { await preview() }
+    }
+    func splitSelected() {
+        guard let id = selected, let index = clips.firstIndex(where: { $0.id == id }) else { return }
+        let clip = clips[index]
+        guard clip.duration >= 0.3 else { return }
+        let priorDuration = clips.prefix(index).reduce(0.0) { $0 + $1.duration }
+        let playhead = max(0, CMTimeGetSeconds(player?.currentTime() ?? .zero) - priorDuration)
+        let position = clip.start + min(max(0.1, playhead), clip.duration - 0.1)
+        clips[index].end = position
+        let right = VideoSegment(url: clip.url, start: position, end: clip.end)
+        clips.insert(right, at: index + 1)
+        selected = right.id
+        Task { await preview() }
+    }
     func composition() async throws -> AVMutableComposition {
         let result = AVMutableComposition()
         guard let videoTrack = result.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
@@ -223,12 +250,17 @@ struct EditorScreen: View {
             }
             .frame(height: 105)
             if let clip = active {
-                HStack {
+                ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
                     Text("Đoạn đã chọn: \(String(format: "%.1fs", clip.duration))").font(.caption)
                     Spacer()
                     Button("Cắt đầu −1s") { model.trim(clip.id, side: "start", seconds: 1) }
                     Button("Cắt cuối −1s") { model.trim(clip.id, side: "end", seconds: -1) }
+                    Button { model.splitSelected() } label: { Label("Tách", systemImage: "scissors") }
+                    Button { model.duplicateSelected() } label: { Label("Nhân đôi", systemImage: "plus.square.on.square") }
+                    Button(role: .destructive) { model.removeSelected() } label: { Label("Xóa", systemImage: "trash") }
                 }.font(.caption2).buttonStyle(.bordered)
+                }
             }
             HStack(spacing: 14) {
                 Image(systemName: "waveform").foregroundStyle(.green)
