@@ -21,6 +21,7 @@ final class StudioUITests: XCTestCase {
         XCTAssertTrue(play.waitForExistence(timeout: 15))
         expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
         play.tap()
+        app.buttons["saveProject"].tap()
         let time = app.staticTexts["playheadTime"]
         let advancing = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label != '00:00.0'"), object: time)
         let result = XCTWaiter.wait(for: [advancing], timeout: 10)

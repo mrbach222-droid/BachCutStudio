@@ -28,7 +28,7 @@ import Photos
     private var thumbnailStarts: [UUID: Double] = [:]
     #if DEBUG
     private var lastEvent = "init"
-    var debugInfo: String { "ready=\(playerReady) rendering=\(rendering) busy=\(busy) rate=\(player?.rate ?? -1) control=\(player?.timeControlStatus.rawValue ?? -1) wait=\(player?.reasonForWaitingToPlay?.rawValue ?? "none") status=\(player?.currentItem?.status.rawValue ?? -1) time=\(player?.currentTime().seconds ?? -1) event=\(lastEvent)" }
+    var debugInfo: String { "ready=\(playerReady) rendering=\(rendering) busy=\(busy) rate=\(player?.rate ?? -1) control=\(player?.timeControlStatus.rawValue ?? -1) wait=\(player?.reasonForWaitingToPlay?.rawValue ?? "none") status=\(player?.currentItem?.status.rawValue ?? -1) time=\(player?.currentTime().seconds ?? -1) event=\(lastEvent) observer=\(observer != nil) same=\(observedPlayer === player) duration=\(player?.currentItem?.duration.seconds ?? -1)" }
     #endif
     private func recordEvent(_ event: String) {
         #if DEBUG

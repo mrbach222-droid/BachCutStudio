@@ -240,4 +240,45 @@ final class StudioTests: XCTestCase {
         XCTAssertTrue(model.clips.isEmpty); XCTAssertFalse(model.busy)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: store.mediaDirectory.path).count, 0)
     }
+
+    @MainActor func testRawImportedAndSavedPlaybackOnNativeLayer() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("native.mov")
+        try await TestMedia.video(to: source, color: .red, duration: 8)
+        let window = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows).first { $0.isKeyWindow })
+        let surface = PlayerSurface(frame: CGRect(x: 20, y: 140, width: 320, height: 180))
+        surface.videoLayer.videoGravity = .resizeAspect
+        window.addSubview(surface); window.layoutIfNeeded()
+        defer { surface.videoLayer.player = nil; surface.removeFromSuperview() }
+        let raw = AVPlayer(url: source); raw.automaticallyWaitsToMinimizeStalling = false
+        surface.videoLayer.player = raw
+        for _ in 0..<200 {
+            if raw.currentItem?.status == .readyToPlay { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        raw.playImmediately(atRate: 1)
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        print("RAW_LAYER time=\(raw.currentTime().seconds) rate=\(raw.rate) ready=\(raw.currentItem?.status.rawValue ?? -1) control=\(raw.timeControlStatus.rawValue) frame=\(surface.videoLayer.isReadyForDisplay)")
+        XCTAssertGreaterThan(raw.currentTime().seconds, 0.1)
+        XCTAssertTrue(surface.videoLayer.isReadyForDisplay)
+        raw.pause(); surface.videoLayer.player = nil
+        let model = EditorModel(store: ProjectStore(root: root)); defer { model.close() }
+        await model.add(url: source); try await waitForPreview(model)
+        surface.videoLayer.player = model.player
+        model.togglePlayback(); try await Task.sleep(nanoseconds: 1_000_000_000)
+        print("IMPORTED_LAYER " + model.debugInfo + " frame=\(surface.videoLayer.isReadyForDisplay)")
+        XCTAssertGreaterThan(model.player?.currentTime().seconds ?? 0, 0.1)
+        XCTAssertGreaterThan(model.playhead, 0.1)
+        XCTAssertTrue(surface.videoLayer.isReadyForDisplay)
+        model.close(); surface.videoLayer.player = nil
+        let restored = try model.store.list()[0]
+        let reopened = EditorModel(project: restored, store: model.store); defer { reopened.close() }
+        await reopened.start(); try await waitForPreview(reopened)
+        surface.videoLayer.player = reopened.player
+        reopened.togglePlayback(); try await Task.sleep(nanoseconds: 1_000_000_000)
+        print("SAVED_LAYER " + reopened.debugInfo + " frame=\(surface.videoLayer.isReadyForDisplay)")
+        XCTAssertGreaterThan(reopened.player?.currentTime().seconds ?? 0, 0.1)
+        XCTAssertGreaterThan(reopened.playhead, 0.1)
+        XCTAssertTrue(surface.videoLayer.isReadyForDisplay)
+    }
 }
