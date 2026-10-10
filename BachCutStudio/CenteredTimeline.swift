@@ -128,7 +128,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         let clip = clips.remove(at: sourceIndexPath.item); clips.insert(clip, at: destinationIndexPath.item)
         moving = false; onMove?(clip.id, destinationIndexPath.item)
         // Durations travel with their clips; rebuild widths and accessibility indices after the drop.
-        collection.reloadData(); layout.invalidateLayout()
+        DispatchQueue.main.async { [weak self] in self?.collection.reloadData(); self?.layout.invalidateLayout() }
     }
     @objc private func longPress(_ gesture: UILongPressGestureRecognizer) {
         let location = gesture.location(in: collection)

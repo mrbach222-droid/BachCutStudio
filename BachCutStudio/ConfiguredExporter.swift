@@ -20,6 +20,7 @@ final class ConfiguredExporter: @unchecked Sendable {
     }
     private func run() async throws {
         do {
+            try Task.checkCancellation()
             try options.validate(duration: rendered.composition.duration.seconds)
             if options.format == .gif { try await gif() } else { try await movie() }
             try Task.checkCancellation(); progress(1)
@@ -34,7 +35,7 @@ final class ConfiguredExporter: @unchecked Sendable {
     }
     private func movie() async throws {
         let (reader, video) = try reader()
-        let writer = try AVAssetWriter(outputURL: url, fileType: options.fileType)
+        let writer = try AVAssetWriter(outputURL: url, fileType: options.format.fileType)
         writer.shouldOptimizeForNetworkUse = true
         let settings: [String: Any] = [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: Int(rendered.video.renderSize.width), AVVideoHeightKey: Int(rendered.video.renderSize.height),
             AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: options.bitrateMbps * 1_000_000, AVVideoExpectedSourceFrameRateKey: options.fps, AVVideoMaxKeyFrameIntervalKey: options.fps * 2, AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel]]

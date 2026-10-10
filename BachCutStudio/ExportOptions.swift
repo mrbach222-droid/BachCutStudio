@@ -44,7 +44,7 @@ struct ExportSheet: View {
                 Section {
                     Picker("Định dạng", selection: $options.format) { ForEach(ExportFormat.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
                         .pickerStyle(.segmented).accessibilityIdentifier("exportFormat")
-                }
+                }.disabled(model.busy)
                 Section("Chất lượng") {
                     Picker("Độ phân giải", selection: $options.resolution) {
                         ForEach(options.format == .gif ? [240, 360, 480] : ExportOptions.resolutions, id: \.self) { Text($0 == 2160 ? "4K · 2160p" : $0 == 1440 ? "2K · 1440p" : "\($0)p").tag($0) }
@@ -55,7 +55,7 @@ struct ExportSheet: View {
                     if options.format != .gif {
                         Picker("Tốc độ bit", selection: $options.bitrateMbps) { ForEach(ExportOptions.bitrates, id: \.self) { Text("\($0) Mbps").tag($0) } }.accessibilityIdentifier("exportBitrate")
                     }
-                }
+                }.disabled(model.busy)
                 Section {
                     Text("Độ phân giải tính theo cạnh ngắn. Tỷ lệ khung hình theo dự án; nâng độ phân giải không tạo thêm chi tiết nguồn.").font(.caption)
                     if options.format == .gif {
@@ -71,24 +71,21 @@ struct ExportSheet: View {
                         if model.busy { Button("Hủy xuất", role: .destructive) { model.cancelExport() }.accessibilityIdentifier("cancelExport") }
                     }
                 }
-            }.disabled(model.busy)
-                .overlay(alignment: .bottom) {
-                    if model.busy { Button("Hủy xuất") { model.cancelExport() }.buttonStyle(.borderedProminent).padding().accessibilityIdentifier("cancelExportActive") }
+            }
+            .navigationTitle("Xuất file")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Quay lại") { dismiss() }.disabled(model.busy) }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Xuất") { started = true; model.startExport(options: options) }
+                        .disabled(model.busy || model.rendering || (options.format == .gif && model.duration > 30.001))
+                        .accessibilityIdentifier("confirmExport")
                 }
-                .navigationTitle("Xuất file")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Quay lại") { dismiss() }.disabled(model.busy) }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Xuất") { started = true; model.startExport(options: options) }
-                            .disabled(model.busy || model.rendering || (options.format == .gif && model.duration > 30.001))
-                            .accessibilityIdentifier("confirmExport")
-                    }
-                }
-                .onChange(of: options.format) { format in
-                    options.resolution = format == .gif ? 480 : 1080
-                    options.fps = format == .gif ? 10 : 30
-                }
-                .onChange(of: model.exportedURL) { if started && $0 != nil { dismiss() } }
+            }
+            .onChange(of: options.format) { format in
+                options.resolution = format == .gif ? 480 : 1080
+                options.fps = format == .gif ? 10 : 30
+            }
+            .onChange(of: model.exportedURL) { if started && $0 != nil { dismiss() } }
         }.interactiveDismissDisabled(model.busy).tint(.cyan)
     }
 }

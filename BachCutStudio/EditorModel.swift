@@ -11,6 +11,7 @@ import Photos
     @Published var exportedURL: URL?
     @Published var exportFraction = 0.0
     private var exportTask: Task<Void, Never>?
+    private var activeExport: UUID?
     @Published var selected: UUID?
     @Published var playhead = 0.0
     @Published var playing = false
@@ -256,6 +257,7 @@ import Photos
     func export(options: ExportOptions? = nil) async {
         guard !busy, !rendering, !clips.isEmpty else { return }
         let format = options?.format ?? .mp4
+        let exportID = UUID(); activeExport = exportID
         busy = true; pause(); exportFraction = 0; progress = "Đang xuất " + format.rawValue + "…"; exportedURL = nil
         defer { busy = false }
         do {
@@ -265,7 +267,7 @@ import Photos
             let url = directory.appendingPathComponent("BachCut-" + UUID().uuidString + "." + format.fileExtension)
             if let options {
                 try await ConfiguredExporter.export(rendered, options: options, to: url) { [weak self] value in
-                    Task { @MainActor in self?.exportFraction = value }
+                    Task { @MainActor in if let self, self.activeExport == exportID, self.busy { self.exportFraction = max(self.exportFraction, value) } }
                 }
             } else { try await MediaComposer.export(rendered, to: url) }
             exportedURL = url; exportFraction = 1; progress = "Đã xuất " + format.rawValue + " thành công"
