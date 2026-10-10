@@ -37,6 +37,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     lazy var collection = UICollectionView(frame: .zero, collectionViewLayout: layout)
     private let canvas = TimelineMarks()
     private let line = UIView()
+    private let timeLabel = UILabel()
     private var clips: [VideoSegment] = []
     private var selected: UUID?
     private var thumbnails: [UUID: [UIImage]] = [:]
@@ -68,6 +69,15 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         line.backgroundColor = .white; line.isUserInteractionEnabled = false
         line.layer.cornerRadius = 1; line.accessibilityIdentifier = "fixedPlayhead"
         addSubview(line)
+        timeLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        timeLabel.textColor = .white
+        timeLabel.textAlignment = .center
+        timeLabel.backgroundColor = UIColor(white: 0.08, alpha: 0.92)
+        timeLabel.layer.cornerRadius = 7
+        timeLabel.clipsToBounds = true
+        timeLabel.isUserInteractionEnabled = false
+        timeLabel.accessibilityIdentifier = "timelineTimecode"
+        addSubview(timeLabel)
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(longPress(_:)))
         hold.minimumPressDuration = 0.35; collection.addGestureRecognizer(hold)
     }
@@ -76,7 +86,9 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         super.layoutSubviews()
         collection.frame = bounds
         layout.sectionInset = UIEdgeInsets(top: 28, left: 0, bottom: max(0, bounds.height - 88), right: 0)
-        line.frame = CGRect(x: bounds.midX - 1, y: 0, width: 2, height: bounds.height)
+        line.frame = CGRect(x: bounds.midX - 1, y: 23, width: 2, height: max(0, bounds.height - 23))
+        timeLabel.frame = CGRect(x: bounds.midX - 38, y: 0, width: 76, height: 22)
+        updateTimecode()
         if lastWidth != bounds.width {
             lastWidth = bounds.width
             synchronizing = true
@@ -102,6 +114,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
             (collection.cellForItem(at: index) as? TimelineCell)?.configure(clips[index.item], index: index.item, selected: clips[index.item].id == selected, image: thumbnails[clips[index.item].id])
         }
         if !userScrolling && !moving { setPosition() }
+        updateTimecode()
         updateMarks()
     }
     private func setPosition() {
@@ -112,6 +125,25 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         }
     }
     private var position: Double { min(duration, max(0, Double(collection.contentOffset.x + collection.contentInset.left) / zoom)) }
+    private func updateTimecode() { timeLabel.text = formatTime(time) }
+
+    // Only snap within a small visual threshold: precise scrubbing stays free elsewhere.
+    // Calculate boundaries from the edited, speed-adjusted durations, not the source timestamps.
+    static func snappedTime(_ value: Double, in clips: [VideoSegment], zoom: Double, thresholdPoints: Double = 10) -> Double {
+        guard value.isFinite, zoom.isFinite, zoom > 0 else { return value }
+        let threshold = max(0, thresholdPoints) / zoom
+        var boundary = 0.0
+        var result = value
+        var distance = threshold
+        for clip in clips {
+            let gap = abs(value - boundary)
+            if gap <= distance { result = boundary; distance = gap }
+            boundary += clip.duration
+        }
+        let gap = abs(value - boundary)
+        if gap <= distance { result = boundary }
+        return result
+    }
     private func updateMarks() {
         canvas.origin = -collection.contentOffset.x; canvas.zoom = zoom; canvas.duration = duration; canvas.setNeedsDisplay()
     }
@@ -155,6 +187,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         updateMarks()
         guard userScrolling, !synchronizing, !moving else { return }
         time = position
+        updateTimecode()
         let now = CACurrentMediaTime()
         if now - lastScrub >= 1.0 / 30 { lastScrub = now; onScrub?(time) }
     }
@@ -162,7 +195,13 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { finishScrub() }
     private func finishScrub() {
         guard userScrolling else { return }
-        time = position; userScrolling = false; onEndScrub?(time); setPosition()
+        let releasedTime = position
+        time = Self.snappedTime(releasedTime, in: clips, zoom: zoom)
+        userScrolling = false
+        if abs(time - releasedTime) > 0.0001 { UISelectionFeedbackGenerator().selectionChanged() }
+        updateTimecode()
+        onEndScrub?(time)
+        setPosition()
     }
 }
 
