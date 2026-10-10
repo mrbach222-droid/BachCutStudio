@@ -1,6 +1,7 @@
 import XCTest
 import AVFoundation
 import UIKit
+import ImageIO
 @testable import BachCutStudio
 
 final class StudioTests: XCTestCase {
@@ -310,4 +311,87 @@ final class StudioTests: XCTestCase {
         XCTAssertGreaterThan(reopened.playhead, 0.1)
         XCTAssertTrue(surface.videoLayer.isReadyForDisplay)
     }
+    func testConfiguredMovieContainersResolutionFPSAndMixedAudio() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let red = root.appendingPathComponent("red.mov"), blue = root.appendingPathComponent("blue.mov"), tone = root.appendingPathComponent("tone.caf")
+        try await TestMedia.video(to: red, color: .red, duration: 1)
+        try await TestMedia.video(to: blue, color: .blue, duration: 1, rotated: true)
+        try TestMedia.audio(to: tone, duration: 2)
+        var project = StudioProject(); project.ratio = .square
+        project.clips = [VideoSegment(url: red, start: 0, end: 1), VideoSegment(url: blue, start: 0, end: 1)]
+        project.audio = [AudioSegment(url: tone, sourceDuration: 2)]
+        for (format, fps) in [(ExportFormat.mp4, 24), (.mov, 60)] {
+            let options = ExportOptions(format: format, resolution: 480, fps: fps, bitrateMbps: 5)
+            let rendered = try await MediaComposer.build(project, options: options)
+            let output = root.appendingPathComponent("output." + format.fileExtension)
+            try await ConfiguredExporter.export(rendered, options: options, to: output)
+            let asset = AVURLAsset(url: output)
+            let video = try await asset.loadTracks(withMediaType: .video)[0]
+            let size = try await video.load(.naturalSize), rate = try await video.load(.nominalFrameRate)
+            XCTAssertEqual(size, CGSize(width: 480, height: 480)); XCTAssertEqual(Double(rate), Double(fps), accuracy: 0.1)
+            let duration = try await asset.load(.duration).seconds; XCTAssertEqual(duration, 2, accuracy: 0.06)
+            let peak = try await audioPeak(asset: asset, start: 0.2, length: 0.5); XCTAssertGreaterThan(peak, 500)
+            let generator = AVAssetImageGenerator(asset: asset)
+            let (first, _) = try await generator.image(at: MediaComposer.time(0.2)); let (last, _) = try await generator.image(at: MediaComposer.time(1.5))
+            XCTAssertGreaterThan(pixel(first, x: 240, y: 240)[0], 180); XCTAssertGreaterThan(pixel(last, x: 240, y: 240)[2], 180)
+            let bytes = try Data(contentsOf: output); XCTAssertTrue(String(decoding: bytes.prefix(64), as: UTF8.self).contains(format == .mov ? "qt  " : "mp4"))
+        }
+    }
+    func testGIFContainsRealOrderedFramesAndLoopTiming() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let red = root.appendingPathComponent("red.mov"), blue = root.appendingPathComponent("blue.mov")
+        try await TestMedia.video(to: red, color: .red, duration: 0.4); try await TestMedia.video(to: blue, color: .blue, duration: 0.4)
+        var project = StudioProject(); project.clips = [VideoSegment(url: red, start: 0, end: 0.4), VideoSegment(url: blue, start: 0, end: 0.4)]
+        let options = ExportOptions(format: .gif, resolution: 240, fps: 10)
+        let rendered = try await MediaComposer.build(project, options: options)
+        let url = root.appendingPathComponent("output.gif"); try await ConfiguredExporter.export(rendered, options: options, to: url)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil))
+        XCTAssertEqual(CGImageSourceGetCount(source), 8)
+        let first = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil)), last = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 7, nil))
+        XCTAssertEqual(first.height, 240); XCTAssertEqual(first.width, 426)
+        XCTAssertGreaterThan(pixel(first, x: 100, y: 100)[0], 180); XCTAssertGreaterThan(pixel(last, x: 100, y: 100)[2], 180)
+        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any])
+        let gif = try XCTUnwrap(properties[kCGImagePropertyGIFDictionary as String] as? [String: Any])
+        XCTAssertEqual((gif[kCGImagePropertyGIFDelayTime as String] as? Double) ?? 0, 0.1, accuracy: 0.001)
+        XCTAssertThrowsError(try ExportOptions(format: .gif, resolution: 480, fps: 10).validate(duration: 31))
+    }
+    @MainActor func testSeekBurstReorderUndoAndCenteredGeometry() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("input.mov"); try await TestMedia.video(to: source, color: .red, duration: 8)
+        let model = EditorModel(store: ProjectStore(root: root)); defer { model.close() }
+        await model.add(url: source); try await waitForPreview(model)
+        model.beginScrub()
+        for index in 0..<200 { model.seek(Double(index) / 25) }
+        model.endScrub(6.125)
+        for _ in 0..<100 {
+            if abs((model.player?.currentTime().seconds ?? 0) - 6.125) < 0.02 { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(model.player?.currentTime().seconds ?? 0, 6.125, accuracy: 0.02)
+        XCTAssertEqual(model.playhead, 6.125, accuracy: 0.02); XCTAssertFalse(model.playing)
+        model.duplicateSelected(); let original = model.clips.map(\.id), moving = model.clips[1].id
+        let undoCount = model.undoStack.count
+        model.moveClip(moving, to: 0)
+        XCTAssertEqual(model.clips.map(\.id), Array(original.reversed())); XCTAssertEqual(model.undoStack.count, undoCount + 1)
+        model.undo(); XCTAssertEqual(model.clips.map(\.id), original); model.redo(); XCTAssertEqual(model.clips.first?.id, moving)
+        let view = TimelineSurface(frame: CGRect(x: 0, y: 0, width: 390, height: 128)); view.layoutIfNeeded()
+        view.apply(project: model.project, selected: moving, thumbnails: [:], zoom: 24, playhead: 5, enabled: true)
+        XCTAssertEqual(view.collection.contentOffset.x + view.collection.contentInset.left, 120, accuracy: 0.01)
+        view.frame.size.width = 700; view.layoutIfNeeded()
+        XCTAssertEqual(view.collection.contentOffset.x + view.collection.contentInset.left, 120, accuracy: 0.01)
+        view.apply(project: model.project, selected: moving, thumbnails: [:], zoom: 80, playhead: 5, enabled: true)
+        XCTAssertEqual(view.collection.contentOffset.x + view.collection.contentInset.left, 400, accuracy: 0.01)
+    }
+    func testCancelledExportRemovesPartialOutput() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("long.mov"); try await TestMedia.video(to: source, color: .green, duration: 5)
+        var project = StudioProject(); project.clips = [VideoSegment(url: source, start: 0, end: 5)]
+        let options = ExportOptions(resolution: 720, fps: 60)
+        let rendered = try await MediaComposer.build(project, options: options), url = root.appendingPathComponent("cancel.mp4")
+        let task = Task { try await ConfiguredExporter.export(rendered, options: options, to: url) }
+        task.cancel()
+        do { try await task.value; XCTFail("Cancellation must stop export") } catch {}
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
 }

@@ -42,12 +42,47 @@ final class StudioUITests: XCTestCase {
         let export = app.buttons["exportVideo"]
         expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: export); waitForExpectations(timeout: 20)
         export.tap()
+        XCTAssertTrue(app.buttons["confirmExport"].waitForExistence(timeout: 10))
+        app.buttons["exportResolution"].tap(); app.buttons["480p"].tap()
+        let settings = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); settings.name = "Export options"; settings.lifetime = .keepAlways; add(settings)
+        app.buttons["confirmExport"].tap()
         XCTAssertTrue(app.staticTexts["Đã xuất MP4 thành công"].waitForExistence(timeout: 40))
         rotateAndSettle(app, landscape: false)
         let portrait = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); portrait.name = "Portrait editor"; portrait.lifetime = .keepAlways; add(portrait)
         app.terminate(); app.launchArguments = ["--uitesting"]; app.launch()
         XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 20)); app.staticTexts["Kiểm thử Studio"].tap()
         XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn")
+    }
+
+    func testCenteredScrubbingAndLongPressReorder() {
+        let app = XCUIApplication(); app.launchArguments = ["--uitesting", "--uitesting-reset", "--uitesting-fixture"]; app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 30)); app.staticTexts["Kiểm thử Studio"].tap()
+        let play = app.buttons["playPause"]
+        XCTAssertTrue(play.waitForExistence(timeout: 15))
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
+        let timeline = app.collectionViews["centeredTimeline"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: 10))
+        let time = app.staticTexts["playheadTime"]
+        let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.45))
+        let end = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.45))
+        start.press(forDuration: 0.05, thenDragTo: end)
+        XCTAssertNotEqual(time.label, "00:00.0", "Moving the timeline must scrub the preview")
+        XCTAssertEqual(play.label, "Phát")
+        app.buttons["duplicateClip"].tap()
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
+        // Reveal the second clip at the center, then hold its thumbnail and drag before the first.
+        app.buttons["clip_1"].tap()
+        let second = app.buttons["clip_1"]
+        let source = second.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5))
+        let destination = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.45))
+        source.press(forDuration: 0.6, thenDragTo: destination)
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
+        XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn")
+        XCTAssertTrue(app.buttons["undo"].isEnabled)
+        XCTAssertEqual(time.label, "00:00.0", "The moved selected clip should now start at zero")
+        app.buttons["undo"].tap()
+        XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn", "Reorder must be one undo action")
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); shot.name = "Centered timeline after drag"; shot.lifetime = .keepAlways; add(shot)
     }
 
     func rotateAndSettle(_ app: XCUIApplication, landscape: Bool) {

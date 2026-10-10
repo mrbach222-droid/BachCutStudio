@@ -9,6 +9,8 @@ import Photos
     @Published var rendering = false
     @Published var progress = ""
     @Published var exportedURL: URL?
+    @Published var exportFraction = 0.0
+    private var exportTask: Task<Void, Never>?
     @Published var selected: UUID?
     @Published var playhead = 0.0
     @Published var playing = false
@@ -25,6 +27,9 @@ import Photos
     private var statusObserver: NSKeyValueObservation?
     private var seekRevision = 0
     private var playbackRevision = 0
+    private var scrubbing = false
+    private var pendingSeek: Double?
+    private var seekOperation: UUID?
     private var previewURL: URL?
     private var thumbnailStarts: [UUID: Double] = [:]
     #if DEBUG
@@ -54,7 +59,7 @@ import Photos
         statusObserver?.invalidate(); rebuildTask?.cancel()
         if let previewURL { try? FileManager.default.removeItem(at: previewURL) }
     }
-    func close() { recordEvent("close"); player?.pause(); playing = false; detachObserver(); rebuildTask?.cancel(); player = nil; discardPreviewFile() }
+    func close() { recordEvent("close"); player?.pause(); playing = false; detachObserver(); rebuildTask?.cancel(); exportTask?.cancel(); player = nil; discardPreviewFile() }
     private func discardPreviewFile() {
         if let previewURL { try? FileManager.default.removeItem(at: previewURL) }; previewURL = nil
     }
@@ -131,6 +136,12 @@ import Photos
         guard let id = selected, let i = clips.firstIndex(where: { $0.id == id }), clips.indices.contains(i + direction) else { return }
         edit { $0.clips.swapAt(i, i + direction) }
     }
+    func moveClip(_ id: UUID, to index: Int) {
+        guard let from = clips.firstIndex(where: { $0.id == id }), clips.indices.contains(index), from != index else { return }
+        pause()
+        edit { p in let clip = p.clips.remove(at: from); p.clips.insert(clip, at: index) }
+        selected = id; seek(project.startTime(of: id))
+    }
     func removeSelected() { guard let id = selected else { return }; edit { $0.clips.removeAll { $0.id == id } } }
     func duplicateSelected() { guard let id = selected else { return }; var newID: UUID?; edit { newID = $0.duplicate(id: id) }; selected = newID }
     func splitSelected() {
@@ -141,10 +152,27 @@ import Photos
     func removeAudio(_ id: UUID) { edit { $0.audio.removeAll { $0.id == id } } }
     func audioVolume(_ id: UUID, value: Double) { edit { p in if let i = p.audio.firstIndex(where: { $0.id == id }) { p.audio[i].volume = min(1, max(0, value)) } } }
     func removeOverlay(_ id: UUID) { edit { $0.overlays.removeAll { $0.id == id } } }
+    func beginScrub() { pause(); scrubbing = true }
+    func endScrub(_ value: Double) { scrubbing = false; seek(value) }
     func seek(_ value: Double) {
+        guard value.isFinite else { return }
         recordEvent("seek")
         playhead = min(duration, max(0, value)); seekRevision += 1
-        player?.seek(to: MediaComposer.time(playhead), toleranceBefore: .zero, toleranceAfter: .zero)
+        pendingSeek = playhead
+        chaseSeek()
+    }
+    // Keep one native seek in flight and retain only the latest requested position.
+    private func chaseSeek() {
+        guard seekOperation == nil, !rendering, let value = pendingSeek, let player else { return }
+        pendingSeek = nil
+        let token = UUID(); seekOperation = token
+        let tolerance = scrubbing ? CMTime(value: 1, timescale: 30) : .zero
+        player.seek(to: MediaComposer.time(value), toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak self, weak player] _ in
+            Task { @MainActor in
+                guard let self, self.seekOperation == token, self.player === player else { return }
+                self.seekOperation = nil; self.chaseSeek()
+            }
+        }
     }
     func togglePlayback() {
         recordEvent("toggle")
@@ -159,6 +187,7 @@ import Photos
         recordEvent("rebuild")
         let token = revision, snapshot = project
         let oldTime = playhead, oldSeek = seekRevision, shouldResume = playing, oldPlayback = playbackRevision
+        seekOperation = nil; pendingSeek = nil; player?.currentItem?.cancelPendingSeeks()
         player?.pause() // Freeze the exact position while a replacement preview is prepared.
         rendering = true; playerReady = false
         defer { if token == revision { rendering = false } }
@@ -186,16 +215,17 @@ import Photos
                 Task { @MainActor in
                     guard let self, self.player === next else { return }
                     let value = time.seconds
-                    if value.isFinite { self.playhead = min(self.duration, max(0, value)) }
+                    if next.rate > 0 && value.isFinite && !self.scrubbing && self.seekOperation == nil && self.pendingSeek == nil { self.playhead = min(self.duration, max(0, value)) }
                     self.playing = next.rate > 0
                 }
             }
             endObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.playing = false }
+                Task { @MainActor in self?.playing = false; if let self { self.playhead = self.duration } }
             }
             let position = oldSeek == seekRevision ? oldTime : playhead
             await next.seek(to: MediaComposer.time(min(position, duration)), toleranceBefore: .zero, toleranceAfter: .zero)
             guard token == revision, !Task.isCancelled, player === next else { return }
+            pendingSeek = nil
             if shouldResume && oldPlayback == playbackRevision { next.playImmediately(atRate: 1); playing = true }
         } catch {
             guard token == revision else { return }
@@ -204,6 +234,8 @@ import Photos
     }
     func loadThumbnails() async {
         let segments = clips + project.overlays.map(\.clip)
+        let activeIDs = Set(segments.map(\.id))
+        thumbnails = thumbnails.filter { activeIDs.contains($0.key) }; thumbnailStarts = thumbnailStarts.filter { activeIDs.contains($0.key) }
         for clip in segments where thumbnails[clip.id] == nil || thumbnailStarts[clip.id] != clip.start {
             if Task.isCancelled { return }
             let generator = AVAssetImageGenerator(asset: AVURLAsset(url: clip.url))
@@ -219,18 +251,26 @@ import Photos
             } catch { /* Missing media is reported by preview. */ }
         }
     }
-    func export() async {
+    func startExport(options: ExportOptions) { guard !busy else { return }; exportTask = Task { await export(options: options) } }
+    func cancelExport() { exportTask?.cancel() }
+    func export(options: ExportOptions? = nil) async {
         guard !busy, !rendering, !clips.isEmpty else { return }
-        busy = true; pause(); progress = "Đang xuất MP4…"; exportedURL = nil
+        let format = options?.format ?? .mp4
+        busy = true; pause(); exportFraction = 0; progress = "Đang xuất " + format.rawValue + "…"; exportedURL = nil
         defer { busy = false }
         do {
-            let rendered = try await MediaComposer.build(project)
+            let rendered = try await MediaComposer.build(project, options: options)
             let directory = store.root.appendingPathComponent("Exports", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let url = directory.appendingPathComponent("BachCut-" + UUID().uuidString + ".mp4")
-            try await MediaComposer.export(rendered, to: url)
-            exportedURL = url; progress = "Đã xuất MP4 thành công"
-        } catch { progress = "Xuất thất bại: " + error.localizedDescription }
+            let url = directory.appendingPathComponent("BachCut-" + UUID().uuidString + "." + format.fileExtension)
+            if let options {
+                try await ConfiguredExporter.export(rendered, options: options, to: url) { [weak self] value in
+                    Task { @MainActor in self?.exportFraction = value }
+                }
+            } else { try await MediaComposer.export(rendered, to: url) }
+            exportedURL = url; exportFraction = 1; progress = "Đã xuất " + format.rawValue + " thành công"
+        } catch is CancellationError { progress = "Đã hủy xuất" }
+        catch { progress = "Xuất thất bại: " + error.localizedDescription }
     }
     func saveToPhotos() async {
         guard !busy, let url = exportedURL else { return }
@@ -238,7 +278,8 @@ import Photos
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard status == .authorized || status == .limited else { progress = "Cho phép thêm video vào Ảnh trong Cài đặt"; return }
         do {
-            try await PHPhotoLibrary.shared().performChanges { PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url) }
+            try await PHPhotoLibrary.shared().performChanges { if url.pathExtension.lowercased() == "gif" { PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: url) }
+                else { PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url) } }
             progress = "Đã lưu video vào Ảnh"
         } catch { progress = "Không lưu được vào Ảnh: " + error.localizedDescription }
     }

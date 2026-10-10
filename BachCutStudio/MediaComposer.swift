@@ -49,8 +49,9 @@ enum MediaComposer {
         let h = aspect >= 1 ? edge / aspect : edge
         return CGSize(width: max(2, floor(w / 2) * 2), height: max(2, floor(h / 2) * 2))
     }
-    static func build(_ project: StudioProject) async throws -> RenderedProject {
+    static func build(_ project: StudioProject, options: ExportOptions? = nil) async throws -> RenderedProject {
         guard !project.clips.isEmpty, project.duration > 0 else { throw StudioError.message("Thêm video trước khi xuất") }
+        if let options { try options.validate(duration: project.duration) }
         let composition = AVMutableComposition()
         guard let base = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid),
               let baseAudio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
@@ -72,7 +73,10 @@ enum MediaComposer {
             }
             let transform = try await source.load(.preferredTransform)
             let size = try await source.load(.naturalSize)
-            if canvas == .zero { canvas = canvasSize(ratio: project.ratio, natural: size, transform: transform) }
+            if canvas == .zero {
+                canvas = canvasSize(ratio: project.ratio, natural: size, transform: transform)
+                if let options { canvas = try options.canvas(aspect: Double(canvas.width / canvas.height)) }
+            }
             let sourceRange = CMTimeRange(start: time(clip.start), duration: time(clip.end - clip.start))
             try base.insertTimeRange(sourceRange, of: source, at: time(cursor))
             base.scaleTimeRange(CMTimeRange(start: time(cursor), duration: sourceRange.duration), toDuration: time(clip.duration))
@@ -144,7 +148,7 @@ enum MediaComposer {
             mix.setVolume(Float(min(1, max(0, sound.volume))), at: time(start)); mixes.append(mix)
         }
         let video = AVMutableVideoComposition()
-        video.renderSize = canvas; video.frameDuration = CMTime(value: 1, timescale: 30); video.instructions = finalInstructions
+        video.renderSize = canvas; video.frameDuration = CMTime(value: 1, timescale: Int32(options?.fps ?? 30)); video.instructions = finalInstructions
         let audio = AVMutableAudioMix(); audio.inputParameters = mixes
         return RenderedProject(composition: composition, video: video, audio: audio, needsVideoComposition: needsVideoComposition)
     }

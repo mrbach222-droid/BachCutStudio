@@ -15,6 +15,7 @@ struct EditorScreen: View {
     @State private var importKind: EditorModel.ImportKind = .video
     @State private var zoom = 24.0
     @State private var showTrim = false
+    @State private var showExport = false
     init(project: StudioProject, store: ProjectStore = ProjectStore()) { _model = StateObject(wrappedValue: EditorModel(project: project, store: store)) }
     var body: some View {
         GeometryReader { geo in
@@ -42,7 +43,7 @@ struct EditorScreen: View {
             }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 Button("Lưu") { if model.saveProject() { model.progress = "Đã lưu dự án" } }.accessibilityIdentifier("saveProject")
-                Button("Xuất") { Task { await model.export() } }
+                Button("Xuất") { model.pause(); showExport = true }
                     .disabled(model.clips.isEmpty || model.rendering || model.busy).accessibilityIdentifier("exportVideo")
             }
         }
@@ -56,6 +57,7 @@ struct EditorScreen: View {
             }
         }
         .sheet(isPresented: $showTrim) { if let clip = model.selectedClip { TrimSheet(clip: clip) { start, end in model.trim(clip.id, start: start, end: end) } } }
+        .sheet(isPresented: $showExport) { ExportSheet(model: model) }
         .tint(.cyan)
     }
     var header: some View {
@@ -108,56 +110,29 @@ struct EditorScreen: View {
                 Slider(value: $zoom, in: 8...80).frame(width: 110)
                 Image(systemName: "plus.magnifyingglass")
             }.font(.caption)
-            ScrollView(.horizontal) {
-                ZStack(alignment: .topLeading) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ruler
-                        HStack(spacing: 0) {
-                            ForEach(model.clips) { clip in
-                                Button { model.select(clip.id) } label: {
-                                    ZStack(alignment: .bottomLeading) {
-                                        Color(red: 0.12, green: 0.22, blue: 0.28)
-                                        if let image = model.thumbnails[clip.id] { Image(uiImage: image).resizable().scaledToFill() }
-                                        Text(formatTime(clip.duration)).font(.caption2.monospacedDigit()).padding(4).background(.black.opacity(0.6))
-                                    }.frame(width: max(1, clip.duration * zoom), height: 60).clipped()
-                                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(model.selected == clip.id ? Color.cyan : Color.black, lineWidth: model.selected == clip.id ? 3 : 1))
-                                }.buttonStyle(.plain).accessibilityIdentifier("clip_" + String(model.clips.firstIndex(where: { $0.id == clip.id }) ?? 0))
+            CenteredTimeline(project: model.project, selected: model.selected, thumbnails: model.thumbnails, zoom: zoom, playhead: model.playhead,
+                             enabled: !model.busy && !model.rendering, select: model.select, beginScrub: model.beginScrub,
+                             scrub: model.seek, endScrub: model.endScrub,
+                             beginMove: { id in model.pause(); model.selected = id }, move: model.moveClip)
+                .frame(height: CGFloat(128 + (model.project.overlays.count + model.project.audio.count) * 32))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            Text("Kéo để tua · Nhấn giữ đoạn để đổi thứ tự").font(.caption2).foregroundStyle(.secondary)
+            if !model.project.audio.isEmpty || !model.project.overlays.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack {
+                        ForEach(model.project.overlays) { overlay in
+                            Menu("V2 · Lớp phủ") { Button("Xóa lớp phủ", role: .destructive) { model.removeOverlay(overlay.id) } }
+                        }
+                        ForEach(model.project.audio) { sound in
+                            Menu("A2 · Nhạc \(Int(sound.volume * 100))%") {
+                                Button("Âm lượng 50%") { model.audioVolume(sound.id, value: 0.5) }
+                                Button("Âm lượng 100%") { model.audioVolume(sound.id, value: 1) }
+                                Button("Xóa nhạc", role: .destructive) { model.removeAudio(sound.id) }
                             }
                         }
-                        ForEach(model.project.overlays) { overlay in
-                            timelineRow(label: "V2 · Lớp phủ", offset: overlay.offset, length: min(overlay.clip.duration, max(0, model.duration - overlay.offset)), color: .purple)
-                                .contextMenu { Button("Xóa lớp phủ", role: .destructive) { model.removeOverlay(overlay.id) } }
-                        }
-                        timelineRow(label: "A1 · Âm thanh nguồn", offset: 0, length: model.duration, color: .teal)
-                        ForEach(model.project.audio) { sound in
-                            timelineRow(label: "A2 · Nhạc \(Int(sound.volume * 100))%", offset: sound.offset, length: min(sound.sourceDuration, max(0, model.duration - sound.offset)), color: .green)
-                                .contextMenu {
-                                    Button("Âm lượng 50%") { model.audioVolume(sound.id, value: 0.5) }
-                                    Button("Âm lượng 100%") { model.audioVolume(sound.id, value: 1) }
-                                    Button("Xóa nhạc", role: .destructive) { model.removeAudio(sound.id) }
-                                }
-                        }
-                    }.frame(width: max(240, model.duration * zoom), alignment: .leading)
-                    Rectangle().fill(.white).frame(width: 2).offset(x: model.playhead * zoom).allowsHitTesting(false)
-                }.padding(.vertical, 3)
-            }.frame(minHeight: 125).background(.white.opacity(0.035)).clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-    }
-    var ruler: some View {
-        ZStack(alignment: .leading) {
-            Color.clear.frame(height: 22)
-            let step = max(max(1, Int(80 / zoom)), Int(ceil(model.duration / 300)))
-            ForEach(Array(stride(from: 0, through: Int(ceil(model.duration)), by: step)), id: \.self) { second in
-                Text(formatTime(Double(second))).font(.system(size: 9, design: .monospaced)).foregroundStyle(.gray).offset(x: Double(second) * zoom)
+                    }.font(.caption).buttonStyle(.bordered)
+                }
             }
-        }.contentShape(Rectangle()).gesture(DragGesture(minimumDistance: 0).onEnded { value in
-            model.pause(); model.seek(value.location.x / zoom)
-        })
-    }
-    func timelineRow(label: String, offset: Double, length: Double, color: Color) -> some View {
-        HStack(spacing: 0) {
-            Color.clear.frame(width: max(0, offset) * zoom, height: 26)
-            Text(label).font(.caption2).lineLimit(1).padding(.horizontal, 5).frame(width: max(1, length * zoom), height: 26, alignment: .leading).background(color.opacity(0.25)).clipped()
         }
     }
     var tools: some View {
