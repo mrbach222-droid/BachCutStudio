@@ -379,6 +379,7 @@ final class StudioTests: XCTestCase {
         let originalClips = model.clips
         let undoCount = model.undoStack.count
         model.moveClip(moving, to: 0)
+        XCTAssertEqual(model.playhead, 6.125, accuracy: 0.02, "Moving a clip must not jump the fixed timeline playhead")
         XCTAssertEqual(model.clips, Array(originalClips.reversed())); XCTAssertEqual(model.undoStack.count, undoCount + 1)
         model.undo(); XCTAssertEqual(model.clips.map(\.id), original); model.redo(); XCTAssertEqual(model.clips.first?.id, moving)
         let view = TimelineSurface(frame: CGRect(x: 0, y: 0, width: 390, height: 128)); view.layoutIfNeeded()
