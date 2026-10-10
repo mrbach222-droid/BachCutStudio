@@ -179,6 +179,7 @@ struct EditorScreen: View {
     @StateObject private var model = EditorModel()
     @State private var importing = false
     @State private var zoom: Double = 10
+    @State private var scrubTime: Double = 0
     @State private var showProjectName = false
     private var active: VideoSegment? { model.clips.first(where: { $0.id == model.selected }) }
 
@@ -237,6 +238,19 @@ struct EditorScreen: View {
             Spacer()
             Text(String(format: "%.1fs", model.duration)).font(.caption.monospacedDigit())
         }.buttonStyle(.plain).foregroundStyle(.white)
+        .overlay(alignment: .bottom) {
+            if model.duration > 0 {
+                Slider(value: $scrubTime, in: 0...max(0.1, model.duration)) { editing in
+                    if !editing {
+                        model.player?.seek(to: CMTime(seconds: scrubTime, preferredTimescale: 600),
+                                           toleranceBefore: .zero, toleranceAfter: .zero)
+                    }
+                }
+                .tint(.cyan)
+                .padding(.top, 8)
+                .offset(y: 23)
+            }
+        }
     }
 
     var editingArea: some View {
