@@ -73,6 +73,8 @@ struct VideoSegment: Identifiable, Codable {
     }
     func delete(at offsets: IndexSet) {
         clips.remove(atOffsets: offsets)
+        if !clips.contains(where: { $0.id == selected }) { selected = clips.first?.id }
+        saveProject()
         Task { await preview() }
     }
     func trim(_ id: UUID, side: String, seconds: Double) {
@@ -82,6 +84,7 @@ struct VideoSegment: Identifiable, Codable {
         } else {
             clips[i].end = max(clips[i].start + 0.1, clips[i].end + seconds)
         }
+        saveProject()
         Task { await preview() }
     }
 
@@ -89,6 +92,7 @@ struct VideoSegment: Identifiable, Codable {
         guard let id = selected, let index = clips.firstIndex(where: { $0.id == id }) else { return }
         clips.remove(at: index)
         selected = clips.first?.id
+        saveProject()
         Task { await preview() }
     }
     func duplicateSelected() {
@@ -97,6 +101,7 @@ struct VideoSegment: Identifiable, Codable {
         let copy = VideoSegment(url: clip.url, start: clip.start, end: clip.end)
         clips.insert(copy, at: index + 1)
         selected = copy.id
+        saveProject()
         Task { await preview() }
     }
     func splitSelected() {
@@ -110,6 +115,7 @@ struct VideoSegment: Identifiable, Codable {
         let right = VideoSegment(url: clip.url, start: position, end: clip.end)
         clips.insert(right, at: index + 1)
         selected = right.id
+        saveProject()
         Task { await preview() }
     }
     func composition() async throws -> AVMutableComposition {
