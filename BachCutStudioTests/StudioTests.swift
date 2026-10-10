@@ -262,9 +262,37 @@ final class StudioTests: XCTestCase {
         XCTAssertGreaterThan(raw.currentTime().seconds, 0.1)
         XCTAssertTrue(surface.videoLayer.isReadyForDisplay)
         raw.pause(); surface.videoLayer.player = nil
+        var seed = StudioProject(); seed.clips = [VideoSegment(url: source, start: 0, end: 8)]
+        let rendered = try await MediaComposer.build(seed)
+        print("VIDEO_VALID=\(rendered.video.isValid(for: rendered.composition, timeRange: CMTimeRange(start: .zero, duration: rendered.composition.duration), validationDelegate: nil)) tracks=\(rendered.composition.tracks.map { $0.trackID }) timing=\(rendered.video.sourceTrackIDForFrameTiming)")
+        for mode in ["COMPOSITION_ONLY", "COMPOSITION_VIDEO", "COMPOSITION_AUTO", "EXPORTED_FILE"] {
+            let item: AVPlayerItem
+            if mode == "EXPORTED_FILE" {
+                let output = root.appendingPathComponent("native-export.mp4")
+                try await MediaComposer.export(rendered, to: output)
+                item = AVPlayerItem(url: output)
+            } else {
+                item = AVPlayerItem(asset: rendered.composition)
+                if mode == "COMPOSITION_VIDEO" { item.videoComposition = rendered.video }
+                if mode == "COMPOSITION_AUTO" { item.videoComposition = AVMutableVideoComposition(propertiesOf: rendered.composition) }
+            }
+            let candidate = AVPlayer(playerItem: item); candidate.automaticallyWaitsToMinimizeStalling = false
+            surface.videoLayer.player = candidate
+            for _ in 0..<200 {
+                if item.status == .readyToPlay { break }
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            candidate.playImmediately(atRate: 1)
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+            print("\(mode) time=\(candidate.currentTime().seconds) rate=\(candidate.rate) status=\(item.status.rawValue) frame=\(surface.videoLayer.isReadyForDisplay) error=\(String(describing: item.error))")
+            XCTAssertGreaterThan(candidate.currentTime().seconds, 0.1, mode)
+            XCTAssertTrue(surface.videoLayer.isReadyForDisplay, mode)
+            candidate.pause(); surface.videoLayer.player = nil
+        }
         let model = EditorModel(store: ProjectStore(root: root)); defer { model.close() }
         await model.add(url: source); try await waitForPreview(model)
         surface.videoLayer.player = model.player
+        print("BEFORE_TOGGLE playing=\(model.playing) " + model.debugInfo)
         model.togglePlayback(); try await Task.sleep(nanoseconds: 1_000_000_000)
         print("IMPORTED_LAYER " + model.debugInfo + " frame=\(surface.videoLayer.isReadyForDisplay)")
         XCTAssertGreaterThan(model.player?.currentTime().seconds ?? 0, 0.1)
