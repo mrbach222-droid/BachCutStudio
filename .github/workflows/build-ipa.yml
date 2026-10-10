@@ -5,6 +5,9 @@ on:
     branches: [main]
 permissions:
   contents: write
+concurrency:
+  group: bachcut-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: macos-15
@@ -15,25 +18,57 @@ jobs:
         run: brew install xcodegen
       - name: Generate Xcode project
         run: xcodegen generate
-      - name: Compile native app
+      - name: Select available iPhone simulator
         run: |
-          xcodebuild -project BachCutStudio.xcodeproj -scheme BachCutStudio -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath "$PWD/build" CODE_SIGNING_ALLOWED=NO build
-      - name: Package unsigned IPA
+          SIMULATOR_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for v in d["devices"].values() for x in v if "iPhone" in x["name"]))')
+          echo "SIMULATOR_ID=$SIMULATOR_ID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$SIMULATOR_ID" || true
+      - name: Test editing, media export and portrait-landscape UI
+        run: |
+          set -o pipefail
+          xcodebuild -project BachCutStudio.xcodeproj -scheme BachCutStudio -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -parallel-testing-enabled NO -resultBundlePath TestResults.xcresult CODE_SIGNING_ALLOWED=NO test 2>&1 | tee tests.log
+      - name: Compile native release app
+        run: |
+          set -o pipefail
+          xcodebuild -project BachCutStudio.xcodeproj -scheme BachCutStudio -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath "$PWD/build" CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build.log
+      - name: Package and validate unsigned IPA
         run: |
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/BachCutStudio.app Payload/
-          zip -qry BachCutStudio_v0.3_unsigned.ipa Payload
+          plutil -lint Payload/BachCutStudio.app/Info.plist
+          test -s Payload/BachCutStudio.app/BachCutStudio
+          test -s Payload/BachCutStudio.app/Assets.car
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Payload/BachCutStudio.app/Info.plist
+          zip -qry BachCutStudio_v0.4.0_unsigned.ipa Payload
+          unzip -t BachCutStudio_v0.4.0_unsigned.ipa
+          shasum -a 256 BachCutStudio_v0.4.0_unsigned.ipa > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: BachCutStudio-validation
+          path: |
+            TestResults.xcresult
+            tests.log
+            build.log
+          retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
-          name: BachCutStudio-v0.3-unsigned-IPA
-          path: BachCutStudio_v0.3_unsigned.ipa
+          name: BachCutStudio-v0.4.0-unsigned-IPA
+          path: |
+            BachCutStudio_v0.4.0_unsigned.ipa
+            SHA256SUMS.txt
           retention-days: 30
-      - name: Publish direct IPA release
+      - name: Publish tested IPA
         if: github.ref == 'refs/heads/main' && success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.3.0
-          name: BáchCut Studio v0.3.0 Preview
+          tag_name: v0.4.0
+          name: BáchCut Studio v0.4.0
           prerelease: true
-          files: BachCutStudio_v0.3_unsigned.ipa
+          files: |
+            BachCutStudio_v0.4.0_unsigned.ipa
+            SHA256SUMS.txt
+          body: |
+            Native editor with multi-project autosave, undo/redo, precise trim/split, speed and volume, orientation-correct preview/export, picture-in-picture video and music tracks, thumbnails, Landscape Pro and Photos export.
+            Release is produced only after simulator unit/integration/UI tests pass. Unsigned IPA: sign before installation. Physical-device verification is still required before a production release.
           overwrite_files: true

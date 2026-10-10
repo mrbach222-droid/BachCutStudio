@@ -1,371 +1,219 @@
 import SwiftUI
-import AVFoundation
+import AVKit
 import UniformTypeIdentifiers
-import UIKit
-
-struct VideoSegment: Identifiable, Codable {
-    var id = UUID()
-    var url: URL
-    var start: Double
-    var end: Double
-    var duration: Double { max(0.01, end - start) }
-}
-
-@MainActor final class EditorModel: ObservableObject {
-    @Published var clips: [VideoSegment] = []
-    @Published var player: AVPlayer?
-    @Published var busy = false
-    @Published var progress = ""
-    @Published var exportedURL: URL?
-    @Published var selected: UUID?
-    var duration: Double { clips.reduce(0) { $0 + $1.duration } }
-    @Published var projectName = "Dự án mới"
-    private var projectDirectory: URL {
-        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Media", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }
-    private var projectURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("bachcut-project.json")
-    }
-    struct SavedProject: Codable {
-        var name: String
-        var clips: [VideoSegment]
-    }
-    func saveProject() {
-        let record = SavedProject(name: projectName, clips: clips)
-        do {
-            let data = try JSONEncoder().encode(record)
-            try data.write(to: projectURL, options: .atomic)
-            progress = "Đã lưu dự án"
-        } catch { progress = "Lỗi lưu dự án: " + error.localizedDescription }
-    }
-    func restoreProject() async {
-        guard let data = try? Data(contentsOf: projectURL),
-              let record = try? JSONDecoder().decode(SavedProject.self, from: data) else { return }
-        projectName = record.name
-        clips = record.clips.filter { FileManager.default.fileExists(atPath: $0.url.path) }
-        selected = clips.first?.id
-        await preview()
-    }
-
-    func add(url: URL) async {
-        let access = url.startAccessingSecurityScopedResource()
-        defer { if access { url.stopAccessingSecurityScopedResource() } }
-        let copy = projectDirectory.appendingPathComponent(UUID().uuidString + "." + (url.pathExtension.isEmpty ? "mov" : url.pathExtension))
-        do {
-            try FileManager.default.copyItem(at: url, to: copy)
-            let asset = AVURLAsset(url: copy)
-            let time = try await asset.load(.duration)
-            let length = CMTimeGetSeconds(time)
-            guard length.isFinite && length > 0 else { progress = "Video không hợp lệ"; return }
-            clips.append(VideoSegment(url: copy, start: 0, end: length))
-            selected = clips.last?.id
-            saveProject()
-            await preview()
-        } catch { progress = "Không nhập được video: \(error.localizedDescription)" }
-    }
-
-    func move(_ offsets: IndexSet, to destination: Int) {
-        clips.move(fromOffsets: offsets, toOffset: destination)
-        saveProject()
-        Task { await preview() }
-    }
-    func delete(at offsets: IndexSet) {
-        clips.remove(atOffsets: offsets)
-        if !clips.contains(where: { $0.id == selected }) { selected = clips.first?.id }
-        saveProject()
-        Task { await preview() }
-    }
-    func trim(_ id: UUID, side: String, seconds: Double) {
-        guard let i = clips.firstIndex(where: { $0.id == id }) else { return }
-        if side == "start" {
-            clips[i].start = min(clips[i].end - 0.1, max(0, clips[i].start + seconds))
-        } else {
-            clips[i].end = max(clips[i].start + 0.1, clips[i].end + seconds)
-        }
-        saveProject()
-        Task { await preview() }
-    }
-
-    func removeSelected() {
-        guard let id = selected, let index = clips.firstIndex(where: { $0.id == id }) else { return }
-        clips.remove(at: index)
-        selected = clips.first?.id
-        saveProject()
-        Task { await preview() }
-    }
-    func duplicateSelected() {
-        guard let id = selected, let index = clips.firstIndex(where: { $0.id == id }) else { return }
-        let clip = clips[index]
-        let copy = VideoSegment(url: clip.url, start: clip.start, end: clip.end)
-        clips.insert(copy, at: index + 1)
-        selected = copy.id
-        saveProject()
-        Task { await preview() }
-    }
-    func splitSelected() {
-        guard let id = selected, let index = clips.firstIndex(where: { $0.id == id }) else { return }
-        let clip = clips[index]
-        guard clip.duration >= 0.3 else { return }
-        let priorDuration = clips.prefix(index).reduce(0.0) { $0 + $1.duration }
-        let playhead = max(0, CMTimeGetSeconds(player?.currentTime() ?? .zero) - priorDuration)
-        let position = clip.start + min(max(0.1, playhead), clip.duration - 0.1)
-        clips[index].end = position
-        let right = VideoSegment(url: clip.url, start: position, end: clip.end)
-        clips.insert(right, at: index + 1)
-        selected = right.id
-        saveProject()
-        Task { await preview() }
-    }
-    func composition() async throws -> AVMutableComposition {
-        let result = AVMutableComposition()
-        guard let videoTrack = result.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-            throw NSError(domain: "BachCut", code: 1, userInfo: [NSLocalizedDescriptionKey: "Cannot create video track"])
-        }
-        let audioTrack = result.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-        var cursor = CMTime.zero
-        for clip in clips {
-            let asset = AVURLAsset(url: clip.url)
-            let sourceVideo = try await asset.loadTracks(withMediaType: .video)
-            guard let first = sourceVideo.first else { continue }
-            let start = CMTime(seconds: clip.start, preferredTimescale: 600)
-            let duration = CMTime(seconds: clip.duration, preferredTimescale: 600)
-            try videoTrack.insertTimeRange(CMTimeRange(start: start, duration: duration), of: first, at: cursor)
-            if cursor == .zero {
-                videoTrack.preferredTransform = try await first.load(.preferredTransform)
-            }
-            if let sound = try await asset.loadTracks(withMediaType: .audio).first {
-                try? audioTrack?.insertTimeRange(CMTimeRange(start: start, duration: duration), of: sound, at: cursor)
-            }
-            cursor = CMTimeAdd(cursor, duration)
-        }
-        return result
-    }
-
-    func preview() async {
-        guard !clips.isEmpty else { player = nil; return }
-        do {
-            let composition = try await composition()
-            player = AVPlayer(playerItem: AVPlayerItem(asset: composition))
-        } catch { progress = "Không thể xem trước: \(error.localizedDescription)" }
-    }
-
-    func export() async {
-        guard !clips.isEmpty else { return }
-        busy = true
-        progress = "Đang dựng video…"
-        defer { busy = false }
-        do {
-            let composition = try await composition()
-            guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
-                progress = "Không thể khởi tạo bộ xuất"; return
-            }
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("BachCut-\(UUID().uuidString).mp4")
-            session.outputURL = url
-            session.outputFileType = .mp4
-            await session.export()
-            if session.status == .completed {
-                exportedURL = url
-                progress = "Đã xuất MP4 thành công"
-            } else {
-                progress = session.error?.localizedDescription ?? "Xuất video thất bại"
-            }
-        } catch { progress = error.localizedDescription }
-    }
-}
 
 @main struct BachCutStudioApp: App {
-    var body: some Scene {
-        WindowGroup { StudioHome().preferredColorScheme(.dark) }
-    }
+    init() { try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback) }
+    var body: some Scene { WindowGroup { StudioHome().preferredColorScheme(.dark) } }
 }
-
 struct EditorScreen: View {
-    @StateObject private var model = EditorModel()
+    @StateObject var model: EditorModel
+    @Environment(\.scenePhase) private var phase
     @State private var importing = false
-    @State private var zoom: Double = 10
-    @State private var scrubTime: Double = 0
-    @State private var showProjectName = false
-    private var active: VideoSegment? { model.clips.first(where: { $0.id == model.selected }) }
-
+    @State private var importKind: EditorModel.ImportKind = .video
+    @State private var zoom = 24.0
+    @State private var showTrim = false
+    init(project: StudioProject, store: ProjectStore = ProjectStore()) { _model = StateObject(wrappedValue: EditorModel(project: project, store: store)) }
     var body: some View {
         GeometryReader { geo in
             let wide = geo.size.width > geo.size.height
-            Group {
+            VStack(spacing: 8) {
+                header
                 if wide {
-                    HStack(spacing: 10) {
-                        VStack(spacing: 8) { preview; transport }
-                            .frame(width: geo.size.width * 0.39)
-                        editingArea
+                    HStack(spacing: 12) {
+                        VStack { preview; transport }.frame(width: geo.size.width * 0.34)
+                        ScrollView { controls; timeline; tools; messages }.frame(maxWidth: .infinity)
                     }
                 } else {
-                    VStack(spacing: 8) {
-                        preview.frame(height: min(geo.size.height * 0.39, 310))
-                        transport
-                        editingArea
-                    }
+                    preview.frame(height: min(geo.size.height * 0.31, 270))
+                    transport
+                    ScrollView { controls; timeline; tools; messages }
                 }
+            }.padding(10).background(Color(red: 0.04, green: 0.05, blue: 0.075))
+        }
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Studio")
+        .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Lưu") { model.saveProject(); model.progress = "Đã lưu dự án" }.accessibilityIdentifier("saveProject") } }
+        .task { await model.start() }
+        .onDisappear { model.saveProject(); model.close() }
+        .onChange(of: phase) { if $0 != .active { model.saveProject(); model.pause() } }
+        .fileImporter(isPresented: $importing, allowedContentTypes: importKind == .audio ? [.audio] : [.movie, .video], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls): Task { for url in urls { await model.add(url: url, kind: importKind) } }
+            case .failure(let error): model.progress = error.localizedDescription
             }
-            .padding(10)
-            .background(Color(red: 0.045, green: 0.055, blue: 0.09))
         }
-        .task { await model.restoreProject() }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.movie, .video, .mpeg4Movie], allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result {
-                Task { for url in urls { await model.add(url: url) } }
-            } else if case .failure(let error) = result { model.progress = error.localizedDescription }
-        }
+        .sheet(isPresented: $showTrim) { if let clip = model.selectedClip { TrimSheet(clip: clip) { start, end in model.trim(clip.id, start: start, end: end) } } }
+        .tint(.cyan)
     }
-
+    var header: some View {
+        HStack {
+            TextField("Tên dự án", text: Binding(get: { model.project.name }, set: { model.rename($0) }))
+                .font(.headline).accessibilityIdentifier("projectName")
+            Button { model.undo() } label: { Image(systemName: "arrow.uturn.backward") }.disabled(model.undoStack.isEmpty || model.busy).accessibilityIdentifier("undo")
+            Button { model.redo() } label: { Image(systemName: "arrow.uturn.forward") }.disabled(model.redoStack.isEmpty || model.busy).accessibilityIdentifier("redo")
+            Menu { ForEach(CanvasRatio.allCases, id: \.self) { ratio in Button(ratio.label) { model.setRatio(ratio) } } } label: { Text(model.project.ratio.label).font(.caption.bold()) }
+        }.padding(.horizontal, 4)
+    }
     var preview: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 14).fill(.black)
-            if let player = model.player {
-                VideoPlayerView(player: player).clipShape(RoundedRectangle(cornerRadius: 12))
-            } else {
-                VStack(spacing: 8) {
-                    Image(systemName: "film.stack").font(.system(size: 38))
-                    Text("Thêm video để bắt đầu").font(.subheadline)
-                }.foregroundStyle(.gray)
-            }
-        }
+            if let player = model.player { VideoPlayerView(player: player).clipShape(RoundedRectangle(cornerRadius: 14)) }
+            else { VStack(spacing: 8) { Image(systemName: "film.stack").font(.largeTitle); Text("Thêm video để bắt đầu").font(.subheadline) }.foregroundStyle(.gray) }
+            if model.rendering { ProgressView().padding(12).background(.ultraThinMaterial).clipShape(Circle()) }
+        }.accessibilityIdentifier("videoPreview")
     }
-
     var transport: some View {
-        HStack {
-            Text("BÁCHCUT STUDIO").font(.system(size: 12, weight: .heavy, design: .rounded)).foregroundStyle(.cyan)
-            Spacer()
-            Button { model.player?.seek(to: .zero) } label: { Image(systemName: "backward.end.fill") }
-            Button {
-                if model.player?.timeControlStatus == .playing { model.player?.pause() }
-                else { model.player?.play() }
-            } label: { Image(systemName: "playpause.fill") }
-            Spacer()
-            Text(String(format: "%.1fs", model.duration)).font(.caption.monospacedDigit())
-        }.buttonStyle(.plain).foregroundStyle(.white)
-        .overlay(alignment: .bottom) {
-            if model.duration > 0 {
-                Slider(value: $scrubTime, in: 0...max(0.1, model.duration)) { editing in
-                    if !editing {
-                        model.player?.seek(to: CMTime(seconds: scrubTime, preferredTimescale: 600),
-                                           toleranceBefore: .zero, toleranceAfter: .zero)
-                    }
-                }
-                .tint(.cyan)
-                .padding(.top, 8)
-                .offset(y: 23)
-            }
+        VStack(spacing: 4) {
+            HStack {
+                Text(formatTime(model.playhead)).font(.caption.monospacedDigit()).accessibilityIdentifier("playheadTime")
+                Spacer()
+                Button { model.seek(0) } label: { Image(systemName: "backward.end.fill") }.accessibilityLabel("Về đầu")
+                Button { model.togglePlayback() } label: { Image(systemName: model.playing ? "pause.fill" : "play.fill").frame(width: 36, height: 28) }
+                    .disabled(model.player == nil || model.rendering || model.busy).accessibilityIdentifier("playPause")
+                Spacer()
+                Text(formatTime(model.duration)).font(.caption.monospacedDigit()).accessibilityIdentifier("durationTime")
+            }.foregroundStyle(.white).buttonStyle(.plain)
+            Slider(value: Binding(get: { model.playhead }, set: { model.seek($0) }), in: 0...max(0.01, model.duration), onEditingChanged: { if $0 { model.pause() } })
+                .disabled(model.clips.isEmpty || model.rendering || model.busy).accessibilityIdentifier("scrubber")
         }
     }
-
-    var editingArea: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                TextField("Tên dự án", text: $model.projectName)
-                    .font(.subheadline.weight(.semibold))
-                    .textFieldStyle(.roundedBorder)
-                Button { model.saveProject() } label: { Image(systemName: "square.and.arrow.down") }
-                    .accessibilityLabel("Lưu dự án")
-            }
+    var controls: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 LibraryVideoButton(model: model)
-                Button { importing = true } label: { Label("Tệp", systemImage: "folder") }
+                Button { importKind = .video; importing = true } label: { Label("Tệp", systemImage: "folder") }
+                Button { importKind = .overlay; importing = true } label: { Label("Lớp phủ", systemImage: "square.on.square") }.disabled(model.clips.isEmpty)
+                Button { importKind = .audio; importing = true } label: { Label("Nhạc", systemImage: "music.note") }.disabled(model.clips.isEmpty)
                 Button { Task { await model.export() } } label: { Label("Xuất MP4", systemImage: "square.and.arrow.up") }
-                    .disabled(model.clips.isEmpty || model.busy)
-                if let url = model.exportedURL {
-                    ShareLink(item: url) { Image(systemName: "square.and.arrow.up.on.square") }
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.cyan)
+                    .disabled(model.clips.isEmpty || model.rendering).accessibilityIdentifier("exportVideo")
+            }.font(.caption.bold()).buttonStyle(.bordered).disabled(model.busy)
+        }.padding(.vertical, 5)
+    }
+    var timeline: some View {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("TIMELINE · VIDEO").font(.caption.bold()).foregroundStyle(.gray)
-                Spacer()
-                Image(systemName: "minus.magnifyingglass")
-                Slider(value: $zoom, in: 3...32).frame(maxWidth: 140)
+                Text("TIMELINE").font(.caption.bold()).foregroundStyle(.gray)
+                Spacer(); Image(systemName: "minus.magnifyingglass")
+                Slider(value: $zoom, in: 8...80).frame(width: 110)
                 Image(systemName: "plus.magnifyingglass")
-            }
+            }.font(.caption)
             ScrollView(.horizontal) {
-                HStack(spacing: 4) {
-                    ForEach(model.clips) { clip in
-                        Button {
-                            model.selected = clip.id
-                        } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Image(systemName: "film").font(.title2)
-                                Text(clip.url.deletingPathExtension().lastPathComponent.prefix(13))
-                                    .font(.caption2).lineLimit(1)
-                                Text(String(format: "%.1f s", clip.duration)).font(.caption2)
+                ZStack(alignment: .topLeading) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ruler
+                        HStack(spacing: 0) {
+                            ForEach(model.clips) { clip in
+                                Button { model.select(clip.id) } label: {
+                                    ZStack(alignment: .bottomLeading) {
+                                        Color(red: 0.12, green: 0.22, blue: 0.28)
+                                        if let image = model.thumbnails[clip.id] { Image(uiImage: image).resizable().scaledToFill() }
+                                        Text(formatTime(clip.duration)).font(.caption2.monospacedDigit()).padding(4).background(.black.opacity(0.6))
+                                    }.frame(width: max(1, clip.duration * zoom), height: 60).clipped()
+                                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(model.selected == clip.id ? Color.cyan : Color.black, lineWidth: model.selected == clip.id ? 3 : 1))
+                                }.buttonStyle(.plain).accessibilityIdentifier("clip_" + String(model.clips.firstIndex(where: { $0.id == clip.id }) ?? 0))
                             }
-                            .foregroundStyle(.white)
-                            .padding(8)
-                            .frame(width: max(85, clip.duration * zoom), height: 91, alignment: .leading)
-                            .background(model.selected == clip.id ? Color.blue : Color(red: 0.17, green: 0.21, blue: 0.34))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-            .frame(height: 105)
-            if let clip = active {
-                ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    Text("Đoạn đã chọn: \(String(format: "%.1fs", clip.duration))").font(.caption)
-                    Spacer()
-                    Button("Cắt đầu −1s") { model.trim(clip.id, side: "start", seconds: 1) }
-                    Button("Cắt cuối −1s") { model.trim(clip.id, side: "end", seconds: -1) }
-                    Button { model.splitSelected() } label: { Label("Tách", systemImage: "scissors") }
-                    Button { model.duplicateSelected() } label: { Label("Nhân đôi", systemImage: "plus.square.on.square") }
-                    Button(role: .destructive) { model.removeSelected() } label: { Label("Xóa", systemImage: "trash") }
-                }.font(.caption2).buttonStyle(.bordered)
-                }
-            }
-            HStack(spacing: 14) {
-                Image(systemName: "waveform").foregroundStyle(.green)
-                Text("A1 · Âm thanh nguồn").font(.caption).foregroundStyle(.gray)
-                Spacer()
-                Text("Cắt · Ghép · Sắp xếp").font(.caption2).foregroundStyle(.secondary)
-            }
-            .frame(height: 34)
-            .padding(.horizontal, 8)
-            .background(.white.opacity(0.05))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            if model.busy { ProgressView().tint(.cyan) }
-            if !model.progress.isEmpty { Text(model.progress).font(.caption).foregroundStyle(.gray).lineLimit(2) }
-            Spacer(minLength: 0)
-            if !model.clips.isEmpty {
-                List {
-                    ForEach(model.clips) { clip in
-                        HStack {
-                            Image(systemName: "film")
-                            Text(clip.url.lastPathComponent).lineLimit(1)
-                            Spacer()
-                            Text(String(format: "%.1fs", clip.duration)).font(.caption)
+                        ForEach(model.project.overlays) { overlay in
+                            timelineRow(label: "V2 · Lớp phủ", offset: overlay.offset, length: min(overlay.clip.duration, max(0, model.duration - overlay.offset)), color: .purple)
+                                .contextMenu { Button("Xóa lớp phủ", role: .destructive) { model.removeOverlay(overlay.id) } }
                         }
-                        .listRowBackground(Color.clear)
-                    }
-                    .onMove(perform: model.move)
-                    .onDelete(perform: model.delete)
-                }
-                .listStyle(.plain)
-                .frame(maxHeight: 110)
+                        timelineRow(label: "A1 · Âm thanh nguồn", offset: 0, length: model.duration, color: .teal)
+                        ForEach(model.project.audio) { sound in
+                            timelineRow(label: "A2 · Nhạc \(Int(sound.volume * 100))%", offset: sound.offset, length: min(sound.sourceDuration, max(0, model.duration - sound.offset)), color: .green)
+                                .contextMenu {
+                                    Button("Âm lượng 50%") { model.audioVolume(sound.id, value: 0.5) }
+                                    Button("Âm lượng 100%") { model.audioVolume(sound.id, value: 1) }
+                                    Button("Xóa nhạc", role: .destructive) { model.removeAudio(sound.id) }
+                                }
+                        }
+                    }.frame(width: max(240, model.duration * zoom), alignment: .leading)
+                    Rectangle().fill(.white).frame(width: 2).offset(x: model.playhead * zoom).allowsHitTesting(false)
+                }.padding(.vertical, 3)
+                    .gesture(DragGesture(minimumDistance: 0).onEnded { value in
+                        // Buttons select clips; the ruler/background also supports exact positioning.
+                        if value.startLocation.y < 23 { model.pause(); model.seek(value.location.x / zoom) }
+                    })
+            }.frame(minHeight: 125).background(.white.opacity(0.035)).clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+    var ruler: some View {
+        ZStack(alignment: .leading) {
+            Color.clear.frame(height: 22)
+            let step = max(1, Int(80 / zoom))
+            ForEach(Array(stride(from: 0, through: Int(ceil(model.duration)), by: step)), id: \.self) { second in
+                Text(formatTime(Double(second))).font(.system(size: 9, design: .monospaced)).foregroundStyle(.gray).offset(x: Double(second) * zoom)
             }
         }
     }
+    func timelineRow(label: String, offset: Double, length: Double, color: Color) -> some View {
+        HStack(spacing: 0) {
+            Color.clear.frame(width: max(0, offset) * zoom, height: 26)
+            Text(label).font(.caption2).lineLimit(1).padding(.horizontal, 5).frame(width: max(1, length * zoom), height: 26, alignment: .leading).background(color.opacity(0.25)).clipped()
+        }
+    }
+    var tools: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let clip = model.selectedClip {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        Button { showTrim = true } label: { Label("Cắt", systemImage: "crop") }.accessibilityIdentifier("trimClip")
+                        Button { model.splitSelected() } label: { Label("Tách", systemImage: "scissors") }.accessibilityIdentifier("splitClip")
+                        Button { model.duplicateSelected() } label: { Label("Nhân đôi", systemImage: "plus.square.on.square") }.accessibilityIdentifier("duplicateClip")
+                        Button { model.moveSelected(-1) } label: { Image(systemName: "arrow.left") }.accessibilityLabel("Chuyển trước")
+                        Button { model.moveSelected(1) } label: { Image(systemName: "arrow.right") }.accessibilityLabel("Chuyển sau")
+                        Button(role: .destructive) { model.removeSelected() } label: { Label("Xóa", systemImage: "trash") }.accessibilityIdentifier("deleteClip")
+                    }.buttonStyle(.bordered).font(.caption)
+                }
+                HStack {
+                    Menu { ForEach([0.5, 1.0, 1.5, 2.0, 4.0], id: \.self) { speed in Button("\(speed, specifier: "%.1f")×") { model.setSpeed(speed) } } } label: { Label("\(clip.speed, specifier: "%.1f")×", systemImage: "speedometer") }
+                    Menu { ForEach([0.0, 0.25, 0.5, 0.75, 1.0], id: \.self) { value in Button("\(Int(value * 100))%") { model.setVolume(value) } } } label: { Label("\(Int(clip.volume * 100))%", systemImage: clip.volume == 0 ? "speaker.slash" : "speaker.wave.2") }
+                    Spacer(); Text("\(model.clips.count) đoạn").font(.caption).foregroundStyle(.gray).accessibilityIdentifier("clipCount")
+                }.font(.caption).padding(.horizontal, 3)
+            }
+        }.disabled(model.busy).padding(.vertical, 6)
+    }
+    var messages: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if model.busy { HStack { ProgressView(); Text(model.progress).font(.caption) } }
+            else if !model.progress.isEmpty { Text(model.progress).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("statusMessage") }
+            if let url = model.exportedURL {
+                HStack {
+                    ShareLink(item: url) { Label("Chia sẻ / Lưu Tệp", systemImage: "square.and.arrow.up") }
+                    Button { Task { await model.saveToPhotos() } } label: { Label("Lưu vào Ảnh", systemImage: "photo") }
+                }.font(.caption).buttonStyle(.bordered).disabled(model.busy)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
+    }
 }
-
-import AVKit
+func formatTime(_ value: Double) -> String {
+    guard value.isFinite else { return "00:00.0" }; let safe = max(0, value)
+    return String(format: "%02d:%04.1f", Int(safe) / 60, safe.truncatingRemainder(dividingBy: 60))
+}
+struct TrimSheet: View {
+    let clip: VideoSegment
+    let apply: (Double, Double) -> Void
+    @Environment(\.dismiss) var dismiss
+    @State var start: Double
+    @State var end: Double
+    init(clip: VideoSegment, apply: @escaping (Double, Double) -> Void) {
+        self.clip = clip; self.apply = apply; _start = State(initialValue: clip.start); _end = State(initialValue: clip.end)
+    }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Điểm bắt đầu · " + formatTime(start)) { Slider(value: $start, in: 0...max(0.001, end - 0.05)) }
+                Section("Điểm kết thúc · " + formatTime(end)) { Slider(value: $end, in: min(clip.sourceDuration, start + 0.05)...clip.sourceDuration) }
+                Text("Đoạn còn lại: " + formatTime((end - start) / clip.speed))
+            }.navigationTitle("Cắt chính xác").toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Quay lại") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("Áp dụng") { apply(start, end); dismiss() } }
+            }
+        }.presentationDetents([.medium, .large])
+    }
+}
 struct VideoPlayerView: UIViewControllerRepresentable {
     let player: AVPlayer
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let vc = AVPlayerViewController()
-        vc.player = player
-        vc.showsPlaybackControls = true
-        return vc
-    }
-    func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
-        if vc.player !== player { vc.player = player }
-    }
+    func makeUIViewController(context: Context) -> AVPlayerViewController { let vc = AVPlayerViewController(); vc.player = player; vc.showsPlaybackControls = false; return vc }
+    func updateUIViewController(_ vc: AVPlayerViewController, context: Context) { if vc.player !== player { vc.player = player } }
 }
