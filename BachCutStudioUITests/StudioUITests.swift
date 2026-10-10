@@ -29,9 +29,9 @@ final class StudioUITests: XCTestCase {
         if play.label == "Tạm dừng" { play.tap() }
         app.buttons["duplicateClip"].tap()
         XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn")
-        app.buttons["clip_1"].tap()
+        app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch.tap()
         expectation(for: NSPredicate(format: "label == '00:08.0'"), evaluatedWith: time); waitForExpectations(timeout: 10)
-        app.buttons["clip_0"].tap()
+        app.descendants(matching: .any).matching(identifier: "clip_0").firstMatch.tap()
         expectation(for: NSPredicate(format: "label == '00:00.0'"), evaluatedWith: time); waitForExpectations(timeout: 10)
         app.buttons["undo"].tap(); XCTAssertEqual(app.staticTexts["clipCount"].label, "1 đoạn")
         app.buttons["redo"].tap(); XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn")
@@ -71,8 +71,8 @@ final class StudioUITests: XCTestCase {
         app.buttons["duplicateClip"].tap()
         expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
         // Reveal the second clip at the center, then hold its thumbnail and drag before the first.
-        app.buttons["clip_1"].tap()
-        let second = app.buttons["clip_1"]
+        app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch.tap()
+        let second = app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch
         let source = second.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5))
         let destination = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.45))
         source.press(forDuration: 0.6, thenDragTo: destination)

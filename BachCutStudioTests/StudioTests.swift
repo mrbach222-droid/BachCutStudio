@@ -332,6 +332,7 @@ final class StudioTests: XCTestCase {
             let duration = try await asset.load(.duration).seconds; XCTAssertEqual(duration, 2, accuracy: 0.06)
             let peak = try await audioPeak(asset: asset, start: 0.2, length: 0.5); XCTAssertGreaterThan(peak, 500)
             let generator = AVAssetImageGenerator(asset: asset)
+            generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
             let (first, _) = try await generator.image(at: MediaComposer.time(0.2)); let (last, _) = try await generator.image(at: MediaComposer.time(1.5))
             XCTAssertGreaterThan(pixel(first, x: 240, y: 240)[0], 180); XCTAssertGreaterThan(pixel(last, x: 240, y: 240)[2], 180)
             let bytes = try Data(contentsOf: output); XCTAssertTrue(String(decoding: bytes.prefix(64), as: UTF8.self).contains(format == .mov ? "qt  " : "mp4"))
@@ -369,10 +370,12 @@ final class StudioTests: XCTestCase {
         }
         XCTAssertEqual(model.player?.currentTime().seconds ?? 0, 6.125, accuracy: 0.02)
         XCTAssertEqual(model.playhead, 6.125, accuracy: 0.02); XCTAssertFalse(model.playing)
-        model.duplicateSelected(); let original = model.clips.map(\.id), moving = model.clips[1].id
+        model.duplicateSelected(); model.trim(model.clips[1].id, end: 3)
+        let original = model.clips.map(\.id), moving = model.clips[1].id
+        let originalClips = model.clips
         let undoCount = model.undoStack.count
         model.moveClip(moving, to: 0)
-        XCTAssertEqual(model.clips.map(\.id), Array(original.reversed())); XCTAssertEqual(model.undoStack.count, undoCount + 1)
+        XCTAssertEqual(model.clips, Array(originalClips.reversed())); XCTAssertEqual(model.undoStack.count, undoCount + 1)
         model.undo(); XCTAssertEqual(model.clips.map(\.id), original); model.redo(); XCTAssertEqual(model.clips.first?.id, moving)
         let view = TimelineSurface(frame: CGRect(x: 0, y: 0, width: 390, height: 128)); view.layoutIfNeeded()
         view.apply(project: model.project, selected: moving, thumbnails: [:], zoom: 24, playhead: 5, enabled: true)
@@ -384,14 +387,39 @@ final class StudioTests: XCTestCase {
     }
     func testCancelledExportRemovesPartialOutput() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
-        let source = root.appendingPathComponent("long.mov"); try await TestMedia.video(to: source, color: .green, duration: 5)
-        var project = StudioProject(); project.clips = [VideoSegment(url: source, start: 0, end: 5)]
+        let source = root.appendingPathComponent("long.mov"); try await TestMedia.video(to: source, color: .green, duration: 20)
+        var project = StudioProject(); project.clips = [VideoSegment(url: source, start: 0, end: 20)]
         let options = ExportOptions(resolution: 720, fps: 60)
         let rendered = try await MediaComposer.build(project, options: options), url = root.appendingPathComponent("cancel.mp4")
         let task = Task { try await ConfiguredExporter.export(rendered, options: options, to: url) }
+        for _ in 0..<100 {
+            if FileManager.default.fileExists(atPath: url.path) { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "Exercise cancellation after creating a partial movie")
         task.cancel()
         do { try await task.value; XCTFail("Cancellation must stop export") } catch {}
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testEveryVideoResolutionAndFrameRateCreatesPlayableH264() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("short.mov"); try await TestMedia.video(to: source, color: .blue, duration: 0.2)
+        var project = StudioProject(); project.ratio = .landscape; project.clips = [VideoSegment(url: source, start: 0, end: 0.2)]
+        for (resolution, fps, bitrate) in [(720, 25, 10), (1080, 30, 20), (1440, 50, 50), (2160, 60, 100)] {
+            let options = ExportOptions(resolution: resolution, fps: fps, bitrateMbps: bitrate)
+            let rendered = try await MediaComposer.build(project, options: options), output = root.appendingPathComponent("\(resolution).mp4")
+            try await ConfiguredExporter.export(rendered, options: options, to: output)
+            let asset = AVURLAsset(url: output), track = try await asset.loadTracks(withMediaType: .video)[0]
+            let size = try await track.load(.naturalSize), rate = try await track.load(.nominalFrameRate)
+            XCTAssertEqual(size.height, CGFloat(resolution)); XCTAssertEqual(size.width, CGFloat((Double(resolution) * 16 / 9 / 2).rounded() * 2))
+            XCTAssertEqual(Double(rate), Double(fps), accuracy: 0.1)
+            let descriptions = try await track.load(.formatDescriptions)
+            XCTAssertEqual(CMFormatDescriptionGetMediaSubType(descriptions[0]), kCMVideoCodecType_H264)
+            let generator = AVAssetImageGenerator(asset: asset); generator.maximumSize = CGSize(width: 80, height: 80)
+            let (frame, _) = try await generator.image(at: .zero)
+            XCTAssertGreaterThan(pixel(frame, x: frame.width / 2, y: frame.height / 2)[2], 180)
+        }
     }
 
 }
