@@ -72,7 +72,7 @@ enum MediaComposer {
             layer.setTransform(fittedTransform(size: size, transform: transform, canvas: canvas), at: time(cursor))
             let instruction = AVMutableVideoCompositionInstruction()
             instruction.timeRange = CMTimeRange(start: time(cursor), duration: time(clip.duration))
-            instruction.backgroundColor = UIColor.black.cgColor
+            instruction.backgroundColor = nil // AVFoundation defaults to opaque black; avoid grayscale CGColor in the live compositor.
             instruction.layerInstructions = [layer]
             instructions.append(instruction)
             cursor += clip.duration
@@ -106,7 +106,7 @@ enum MediaComposer {
             guard let baseInstruction = instructions.first(where: { $0.timeRange.start.seconds <= mid && $0.timeRange.end.seconds > mid }) else { continue }
             let instruction = AVMutableVideoCompositionInstruction()
             instruction.timeRange = CMTimeRange(start: time(start), duration: time(end - start))
-            instruction.backgroundColor = UIColor.black.cgColor
+            instruction.backgroundColor = nil // AVFoundation defaults to opaque black; avoid grayscale CGColor in the live compositor.
             instruction.layerInstructions = overlayLayers.filter { $0.0 <= mid && $0.1 > mid }.reversed().map { $0.2 } + baseInstruction.layerInstructions
             finalInstructions.append(instruction)
         }

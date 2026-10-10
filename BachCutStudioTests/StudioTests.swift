@@ -264,7 +264,7 @@ final class StudioTests: XCTestCase {
         raw.pause(); surface.videoLayer.player = nil
         var seed = StudioProject(); seed.clips = [VideoSegment(url: source, start: 0, end: 8)]
         let rendered = try await MediaComposer.build(seed)
-        print("VIDEO_VALID=\(rendered.video.isValid(for: rendered.composition, timeRange: CMTimeRange(start: .zero, duration: rendered.composition.duration), validationDelegate: nil)) tracks=\(rendered.composition.tracks.map { $0.trackID }) timing=\(rendered.video.sourceTrackIDForFrameTiming)")
+        print("VIDEO_VALID=\(try await rendered.video.isValid(for: rendered.composition, timeRange: CMTimeRange(start: .zero, duration: rendered.composition.duration), validationDelegate: nil)) tracks=\(rendered.composition.tracks.map { $0.trackID }) timing=\(rendered.video.sourceTrackIDForFrameTiming)")
         for mode in ["COMPOSITION_ONLY", "COMPOSITION_VIDEO", "COMPOSITION_AUTO", "EXPORTED_FILE"] {
             let item: AVPlayerItem
             if mode == "EXPORTED_FILE" {
