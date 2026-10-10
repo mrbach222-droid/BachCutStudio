@@ -1,5 +1,6 @@
 import AVFoundation
 import UIKit
+import Metal
 
 enum StudioError: LocalizedError {
     case message(String)
@@ -10,7 +11,25 @@ struct RenderedProject {
     let video: AVMutableVideoComposition
     let audio: AVMutableAudioMix
 }
+struct PreviewSource {
+    let item: AVPlayerItem
+    let temporaryURL: URL?
+}
 enum MediaComposer {
+    static var hasMetalDevice: Bool { MTLCreateSystemDefaultDevice() != nil }
+    static func previewSource(_ rendered: RenderedProject, directory: URL, useFile: Bool = !MediaComposer.hasMetalDevice) async throws -> PreviewSource {
+        if useFile {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent(UUID().uuidString + ".mp4")
+            try await export(rendered, to: url)
+            if Task.isCancelled { try? FileManager.default.removeItem(at: url); throw CancellationError() }
+            return PreviewSource(item: AVPlayerItem(url: url), temporaryURL: url)
+        }
+        let item = AVPlayerItem(asset: rendered.composition)
+        item.videoComposition = rendered.video
+        if !rendered.audio.inputParameters.isEmpty { item.audioMix = rendered.audio }
+        return PreviewSource(item: item, temporaryURL: nil)
+    }
     static func time(_ value: Double) -> CMTime { CMTime(seconds: value, preferredTimescale: 600) }
     static func fittedTransform(size: CGSize, transform: CGAffineTransform, canvas: CGSize, inset: CGRect? = nil) -> CGAffineTransform {
         let rect = CGRect(origin: .zero, size: size).applying(transform)
@@ -132,7 +151,11 @@ enum MediaComposer {
         session.outputURL = url; session.outputFileType = .mp4; session.shouldOptimizeForNetworkUse = true
         session.videoComposition = rendered.video
         if !rendered.audio.inputParameters.isEmpty { session.audioMix = rendered.audio }
-        await session.export()
+        await withTaskCancellationHandler {
+            await session.export()
+        } onCancel: {
+            session.cancelExport()
+        }
         guard session.status == .completed else {
             try? FileManager.default.removeItem(at: url)
             throw session.error ?? StudioError.message("Xuất video thất bại")

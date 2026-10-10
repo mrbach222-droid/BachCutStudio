@@ -25,6 +25,7 @@ import Photos
     private var statusObserver: NSKeyValueObservation?
     private var seekRevision = 0
     private var playbackRevision = 0
+    private var previewURL: URL?
     private var thumbnailStarts: [UUID: Double] = [:]
     #if DEBUG
     private var lastEvent = "init"
@@ -51,8 +52,12 @@ import Photos
         if let observer { observedPlayer?.removeTimeObserver(observer) }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         statusObserver?.invalidate(); rebuildTask?.cancel()
+        if let previewURL { try? FileManager.default.removeItem(at: previewURL) }
     }
-    func close() { recordEvent("close"); player?.pause(); playing = false; detachObserver(); rebuildTask?.cancel() }
+    func close() { recordEvent("close"); player?.pause(); playing = false; detachObserver(); rebuildTask?.cancel(); player = nil; discardPreviewFile() }
+    private func discardPreviewFile() {
+        if let previewURL { try? FileManager.default.removeItem(at: previewURL) }; previewURL = nil
+    }
     private func detachObserver() {
         if let token = observer { observedPlayer?.removeTimeObserver(token) }
         if let token = endObserver { NotificationCenter.default.removeObserver(token) }
@@ -157,14 +162,17 @@ import Photos
         rendering = true; playerReady = false
         defer { if token == revision { rendering = false } }
         do {
-            if snapshot.clips.isEmpty { detachObserver(); player?.pause(); player = nil; playing = false; return }
+            if snapshot.clips.isEmpty { detachObserver(); player?.pause(); player = nil; discardPreviewFile(); playing = false; return }
             let rendered = try await MediaComposer.build(snapshot)
             guard token == revision, !Task.isCancelled else { return }
-            let item = AVPlayerItem(asset: rendered.composition); item.videoComposition = rendered.video
-            if !rendered.audio.inputParameters.isEmpty { item.audioMix = rendered.audio }
+            let source = try await MediaComposer.previewSource(rendered, directory: FileManager.default.temporaryDirectory.appendingPathComponent("BachCutPreview", isDirectory: true))
+            guard token == revision, !Task.isCancelled else {
+                if let url = source.temporaryURL { try? FileManager.default.removeItem(at: url) }; return
+            }
+            let item = source.item
             let next = AVPlayer(playerItem: item)
             next.automaticallyWaitsToMinimizeStalling = false
-            detachObserver(); player?.pause(); player = next
+            detachObserver(); player?.pause(); player = nil; discardPreviewFile(); previewURL = source.temporaryURL; player = next
             observedPlayer = next
             statusObserver = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
                 Task { @MainActor in
@@ -190,7 +198,7 @@ import Photos
             if shouldResume && oldPlayback == playbackRevision { next.playImmediately(atRate: 1); playing = true }
         } catch {
             guard token == revision else { return }
-            pause(); detachObserver(); player = nil; progress = "Không xem trước được: " + error.localizedDescription
+            pause(); detachObserver(); player = nil; discardPreviewFile(); progress = "Không xem trước được: " + error.localizedDescription
         }
     }
     func loadThumbnails() async {

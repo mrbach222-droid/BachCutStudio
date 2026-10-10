@@ -264,29 +264,24 @@ final class StudioTests: XCTestCase {
         raw.pause(); surface.videoLayer.player = nil
         var seed = StudioProject(); seed.clips = [VideoSegment(url: source, start: 0, end: 8)]
         let rendered = try await MediaComposer.build(seed)
-        print("VIDEO_VALID=\(try await rendered.video.isValid(for: rendered.composition, timeRange: CMTimeRange(start: .zero, duration: rendered.composition.duration), validationDelegate: nil)) tracks=\(rendered.composition.tracks.map { $0.trackID }) timing=\(rendered.video.sourceTrackIDForFrameTiming)")
-        for mode in ["COMPOSITION_ONLY", "COMPOSITION_VIDEO", "COMPOSITION_AUTO", "EXPORTED_FILE"] {
-            let item: AVPlayerItem
-            if mode == "EXPORTED_FILE" {
-                let output = root.appendingPathComponent("native-export.mp4")
-                try await MediaComposer.export(rendered, to: output)
-                item = AVPlayerItem(url: output)
-            } else {
-                item = AVPlayerItem(asset: rendered.composition)
-                if mode == "COMPOSITION_VIDEO" { item.videoComposition = rendered.video }
-                if mode == "COMPOSITION_AUTO" { item.videoComposition = AVMutableVideoComposition(propertiesOf: rendered.composition) }
-            }
-            let candidate = AVPlayer(playerItem: item); candidate.automaticallyWaitsToMinimizeStalling = false
+        let valid = try await rendered.video.isValid(for: rendered.composition, timeRange: CMTimeRange(start: .zero, duration: rendered.composition.duration), validationDelegate: nil)
+        XCTAssertTrue(valid)
+        print("METAL_AVAILABLE=\(MediaComposer.hasMetalDevice)")
+        for forceFile in [false, true] {
+            // Both cases use the application's preview path. File mode also covers hosts without a GPU.
+            let preview = try await MediaComposer.previewSource(rendered, directory: root.appendingPathComponent("Preview"), useFile: forceFile || !MediaComposer.hasMetalDevice)
+            defer { if let url = preview.temporaryURL { try? FileManager.default.removeItem(at: url) } }
+            let candidate = AVPlayer(playerItem: preview.item); candidate.automaticallyWaitsToMinimizeStalling = false
             surface.videoLayer.player = candidate
             for _ in 0..<200 {
-                if item.status == .readyToPlay { break }
+                if preview.item.status == .readyToPlay { break }
                 try await Task.sleep(nanoseconds: 50_000_000)
             }
             candidate.playImmediately(atRate: 1)
             try await Task.sleep(nanoseconds: 1_000_000_000)
-            print("\(mode) time=\(candidate.currentTime().seconds) rate=\(candidate.rate) status=\(item.status.rawValue) frame=\(surface.videoLayer.isReadyForDisplay) error=\(String(describing: item.error))")
-            XCTAssertGreaterThan(candidate.currentTime().seconds, 0.1, mode)
-            XCTAssertTrue(surface.videoLayer.isReadyForDisplay, mode)
+            print("PREVIEW_FILE=\(preview.temporaryURL != nil) time=\(candidate.currentTime().seconds) frame=\(surface.videoLayer.isReadyForDisplay)")
+            XCTAssertGreaterThan(candidate.currentTime().seconds, 0.1)
+            XCTAssertTrue(surface.videoLayer.isReadyForDisplay)
             candidate.pause(); surface.videoLayer.player = nil
         }
         let model = EditorModel(store: ProjectStore(root: root)); defer { model.close() }
