@@ -22,6 +22,7 @@ import Photos
     private var observedPlayer: AVPlayer?
     private var endObserver: NSObjectProtocol?
     private var seekRevision = 0
+    private var playbackRevision = 0
     var clips: [VideoSegment] { project.clips }
     var duration: Double { project.duration }
     var selectedClip: VideoSegment? { clips.first { $0.id == selected } }
@@ -123,14 +124,15 @@ import Photos
     }
     func togglePlayback() {
         guard !rendering, !busy, let player else { return }
+        playbackRevision += 1
         if playing { player.pause(); playing = false } else {
             if playhead >= duration - 0.05 { seek(0) }; player.play(); playing = true
         }
     }
-    func pause() { player?.pause(); playing = false }
+    func pause() { playbackRevision += 1; player?.pause(); playing = false }
     func refreshPreview() async {
         let token = revision, snapshot = project
-        let oldTime = playhead, oldSeek = seekRevision, shouldResume = playing
+        let oldTime = playhead, oldSeek = seekRevision, shouldResume = playing, oldPlayback = playbackRevision
         rendering = true
         defer { if token == revision { rendering = false } }
         do {
@@ -155,7 +157,7 @@ import Photos
             let position = oldSeek == seekRevision ? oldTime : playhead
             await next.seek(to: MediaComposer.time(min(position, duration)), toleranceBefore: .zero, toleranceAfter: .zero)
             guard token == revision, !Task.isCancelled, player === next else { return }
-            if shouldResume { next.play(); playing = true }
+            if shouldResume && oldPlayback == playbackRevision { next.play(); playing = true }
         } catch {
             guard token == revision else { return }
             pause(); detachObserver(); player = nil; progress = "Không xem trước được: " + error.localizedDescription

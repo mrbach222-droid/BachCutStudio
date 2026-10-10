@@ -26,7 +26,7 @@ jobs:
       - name: Test editing, media export and portrait-landscape UI
         run: |
           set -o pipefail
-          xcodebuild -project BachCutStudio.xcodeproj -scheme BachCutStudio -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -parallel-testing-enabled NO -resultBundlePath TestResults.xcresult CODE_SIGNING_ALLOWED=NO test 2>&1 | tee tests.log
+          xcodebuild -project BachCutStudio.xcodeproj -scheme BachCutStudio -configuration Debug -destination "platform=iOS Simulator,id=$SIMULATOR_ID" -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 120 -maximum-test-execution-time-allowance 180 -resultBundlePath TestResults.xcresult CODE_SIGNING_ALLOWED=NO test 2>&1 | tee tests.log
       - name: Compile native release app
         run: |
           set -o pipefail

@@ -116,6 +116,47 @@ final class StudioTests: XCTestCase {
         let peak = bytes.withUnsafeBytes { ptr -> Int in ptr.bindMemory(to: Int16.self).map { abs(Int($0)) }.max() ?? 0 }
         XCTAssertGreaterThan(peak, 500, "Exported audio must contain a real waveform")
     }
+    func testSourceAudioFollowsSpeedAndMute() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let video = root.appendingPathComponent("source.mov"), sound = root.appendingPathComponent("sound.caf")
+        try await TestMedia.video(to: video, color: .red, duration: 2)
+        try TestMedia.audio(to: sound, duration: 2)
+        var seed = StudioProject(); seed.clips = [VideoSegment(url: video, start: 0, end: 2)]
+        seed.audio = [AudioSegment(url: sound, sourceDuration: 2, volume: 1)]
+        let source = root.appendingPathComponent("with-audio.mp4")
+        let seedRendered = try await MediaComposer.build(seed)
+        try await MediaComposer.export(seedRendered, to: source)
+        var edited = StudioProject()
+        edited.clips = [VideoSegment(url: source, start: 0, end: 2, speed: 2, volume: 1),
+                        VideoSegment(url: source, start: 0, end: 2, speed: 0.5, volume: 0)]
+        let output = root.appendingPathComponent("speed-mute.mp4")
+        let editedRendered = try await MediaComposer.build(edited)
+        try await MediaComposer.export(editedRendered, to: output)
+        let asset = AVURLAsset(url: output)
+        let duration = try await asset.load(.duration).seconds
+        XCTAssertEqual(duration, 5, accuracy: 0.08)
+        let audible = try await audioPeak(asset: asset, start: 0.2, length: 0.5)
+        let muted = try await audioPeak(asset: asset, start: 1.5, length: 1)
+        XCTAssertGreaterThan(audible, 500)
+        XCTAssertLessThan(muted, 100, "Muted source audio must stay muted after speed changes")
+    }
+    func audioPeak(asset: AVAsset, start: Double, length: Double) async throws -> Int {
+        let reader = try AVAssetReader(asset: asset)
+        reader.timeRange = CMTimeRange(start: MediaComposer.time(start), duration: MediaComposer.time(length))
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        let output = AVAssetReaderTrackOutput(track: tracks[0], outputSettings: [AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false])
+        reader.add(output); XCTAssertTrue(reader.startReading())
+        var peak = 0
+        while let sample = output.copyNextSampleBuffer() {
+            if let block = CMSampleBufferGetDataBuffer(sample) {
+                let count = CMBlockBufferGetDataLength(block); var bytes = Data(count: count)
+                bytes.withUnsafeMutableBytes { pointer in _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: count, destination: pointer.baseAddress!) }
+                peak = max(peak, bytes.withUnsafeBytes { $0.bindMemory(to: Int16.self).map { abs(Int($0)) }.max() ?? 0 })
+            }
+        }
+        XCTAssertEqual(reader.status, .completed)
+        return peak
+    }
     func pixel(_ image: CGImage, x: Int, y: Int) -> [UInt8] {
         var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
         bytes.withUnsafeMutableBytes { pointer in
@@ -152,6 +193,11 @@ final class StudioTests: XCTestCase {
         XCTAssertEqual(restored.clips, model.clips)
         await model.export(); XCTAssertNotNil(model.exportedURL)
         XCTAssertTrue(FileManager.default.fileExists(atPath: model.exportedURL!.path))
+        model.seek(0); model.togglePlayback()
+        try await Task.sleep(nanoseconds: 250_000_000)
+        model.setVolume(0.25); model.pause()
+        try await waitForPreview(model)
+        XCTAssertFalse(model.playing, "Pause during preview rebuild must not auto-resume")
         model.close()
         let reopened = EditorModel(project: restored, store: model.store); defer { reopened.close() }
         await reopened.start(); XCTAssertNotNil(reopened.player)

@@ -58,7 +58,7 @@ enum MediaComposer {
             base.scaleTimeRange(CMTimeRange(start: time(cursor), duration: sourceRange.duration), toDuration: time(clip.duration))
             if let sound = try await asset.loadTracks(withMediaType: .audio).first {
                 // Use the intersection: some video containers have a shorter audio track.
-                let intersection = CMTimeRangeGetIntersection(sourceRange, try await sound.load(.timeRange))
+                let intersection = CMTimeRangeGetIntersection(sourceRange, otherRange: try await sound.load(.timeRange))
                 if intersection.duration.seconds > 0 {
                     let destination = cursor + (intersection.start.seconds - clip.start) / clip.speed
                     try baseAudio.insertTimeRange(intersection, of: sound, at: time(destination))
