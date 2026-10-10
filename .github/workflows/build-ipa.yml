@@ -3,6 +3,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: macos-15
@@ -20,9 +22,18 @@ jobs:
         run: |
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/BachCutStudio.app Payload/
-          zip -qry BachCutStudio_v0.1_unsigned.ipa Payload
+          zip -qry BachCutStudio_v0.2_unsigned.ipa Payload
       - uses: actions/upload-artifact@v4
         with:
-          name: BachCutStudio-v0.1-unsigned-IPA
+          name: BachCutStudio-v0.2-unsigned-IPA
           path: BachCutStudio_v0.1_unsigned.ipa
           retention-days: 30
+      - name: Publish direct IPA release
+        if: github.ref == 'refs/heads/main' && success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.2.0
+          name: BáchCut Studio v0.2.0 Preview
+          prerelease: true
+          files: BachCutStudio_v0.2_unsigned.ipa
+          overwrite_files: true
