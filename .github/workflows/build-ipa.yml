@@ -1,0 +1,28 @@
+name: Build BáchCut Studio IPA
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Compile native app
+        run: |
+          xcodebuild -project BachCutStudio.xcodeproj -scheme BachCutStudio -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath "$PWD/build" CODE_SIGNING_ALLOWED=NO build
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/BachCutStudio.app Payload/
+          zip -qry BachCutStudio_v0.1_unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BachCutStudio-v0.1-unsigned-IPA
+          path: BachCutStudio_v0.1_unsigned.ipa
+          retention-days: 30
