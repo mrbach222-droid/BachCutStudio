@@ -72,6 +72,8 @@ final class StudioUITests: XCTestCase {
         expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
         // Reveal the second clip at the center, then hold its thumbnail and drag before the first.
         app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch.tap()
+        let timeBeforeReorder = time.label
+        XCTAssertNotEqual(timeBeforeReorder, "00:00.0", "Selection must move to the second clip before reordering")
         let second = app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch
         let source = second.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5))
         let destination = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.45))
@@ -79,7 +81,7 @@ final class StudioUITests: XCTestCase {
         expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
         XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn")
         XCTAssertTrue(app.buttons["undo"].isEnabled)
-        XCTAssertEqual(time.label, "00:00.0", "The moved selected clip should now start at zero")
+        XCTAssertEqual(time.label, timeBeforeReorder, "Long-press reorder must preserve the fixed center playhead")
         app.buttons["undo"].tap()
         XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn", "Reorder must be one undo action")
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); shot.name = "Centered timeline after drag"; shot.lifetime = .keepAlways; add(shot)
