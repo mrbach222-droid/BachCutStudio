@@ -32,6 +32,30 @@ import Photos
     private var pendingSeek: Double?
     private var seekOperation: UUID?
     private var previewURL: URL?
+    // Cache a few finished *composited* preview files. Replaying an earlier
+    // timeline state via Undo/Redo should not re-encode the same video again.
+    // Project name and edited timestamp deliberately do not affect video output.
+    private struct PreviewSignature: Equatable {
+        let clips: [VideoSegment]
+        let audio: [AudioSegment]
+        let overlays: [OverlaySegment]
+        let ratio: CanvasRatio
+        init(_ project: StudioProject) {
+            clips = project.clips; audio = project.audio
+            overlays = project.overlays; ratio = project.ratio
+        }
+    }
+    private struct CachedPreview {
+        let signature: PreviewSignature
+        let url: URL
+        let bytes: UInt64
+    }
+    private var previewCache: [CachedPreview] = []
+    private let maxPreviewFiles = 3
+    private let maxPreviewBytes: UInt64 = 256 * 1024 * 1024
+    #if DEBUG
+    private(set) var previewReuseCount = 0
+    #endif
     private var thumbnailSources: [UUID: VideoSegment] = [:]
     #if DEBUG
     private var lastEvent = "init"
@@ -58,11 +82,47 @@ import Photos
         if let observer { observedPlayer?.removeTimeObserver(observer) }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         statusObserver?.invalidate(); rebuildTask?.cancel()
-        if let previewURL { try? FileManager.default.removeItem(at: previewURL) }
+        if let previewURL, !previewCache.contains(where: { $0.url == previewURL }) {
+            try? FileManager.default.removeItem(at: previewURL)
+        }
+        for cached in previewCache { try? FileManager.default.removeItem(at: cached.url) }
     }
-    func close() { recordEvent("close"); player?.pause(); playing = false; detachObserver(); rebuildTask?.cancel(); exportTask?.cancel(); player = nil; discardPreviewFile() }
+    func close() {
+        recordEvent("close"); player?.pause(); playing = false; detachObserver()
+        rebuildTask?.cancel(); exportTask?.cancel(); player = nil
+        discardPreviewFile(); clearCachedPreviews()
+    }
+    private func clearCachedPreviews() {
+        for cached in previewCache { try? FileManager.default.removeItem(at: cached.url) }
+        previewCache.removeAll()
+    }
     private func discardPreviewFile() {
-        if let previewURL { try? FileManager.default.removeItem(at: previewURL) }; previewURL = nil
+        if let previewURL, !previewCache.contains(where: { $0.url == previewURL }) {
+            try? FileManager.default.removeItem(at: previewURL)
+        }
+        previewURL = nil
+    }
+    private func cachedPreview(for signature: PreviewSignature) -> URL? {
+        guard let index = previewCache.firstIndex(where: { $0.signature == signature }) else { return nil }
+        let entry = previewCache.remove(at: index)
+        guard FileManager.default.fileExists(atPath: entry.url.path) else { return nil }
+        previewCache.append(entry) // Least recently used at the front.
+        #if DEBUG
+        previewReuseCount += 1
+        #endif
+        return entry.url
+    }
+    private func rememberPreview(_ url: URL, for signature: PreviewSignature) {
+        let size = ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.uint64Value ?? 0
+        guard size > 0, size <= maxPreviewBytes else { return }
+        previewCache.removeAll { $0.url == url }
+        previewCache.append(CachedPreview(signature: signature, url: url, bytes: size))
+        while previewCache.count > maxPreviewFiles ||
+              previewCache.reduce(UInt64(0), { $0 + $1.bytes }) > maxPreviewBytes {
+            guard let evict = previewCache.firstIndex(where: { $0.url != previewURL }) else { break }
+            let old = previewCache.remove(at: evict)
+            try? FileManager.default.removeItem(at: old.url)
+        }
     }
     private func detachObserver() {
         if let token = observer { observedPlayer?.removeTimeObserver(token) }
@@ -233,16 +293,29 @@ import Photos
         defer { if token == revision { rendering = false } }
         do {
             if snapshot.clips.isEmpty { detachObserver(); player?.pause(); player = nil; discardPreviewFile(); playing = false; return }
-            let rendered = try await MediaComposer.build(snapshot)
-            guard token == revision, !Task.isCancelled else { return }
-            let source = try await MediaComposer.previewSource(rendered, directory: FileManager.default.temporaryDirectory.appendingPathComponent("BachCutPreview", isDirectory: true))
+            let signature = PreviewSignature(snapshot)
+            let source: PreviewSource
+            if let existing = cachedPreview(for: signature) {
+                // Previously verified composition, reused instantly without re-encoding.
+                source = PreviewSource(item: AVPlayerItem(url: existing), temporaryURL: existing)
+            } else {
+                let rendered = try await MediaComposer.build(snapshot)
+                guard token == revision, !Task.isCancelled else { return }
+                source = try await MediaComposer.previewSource(rendered, directory: FileManager.default.temporaryDirectory.appendingPathComponent("BachCutPreview", isDirectory: true))
+            }
             guard token == revision, !Task.isCancelled else {
-                if let url = source.temporaryURL { try? FileManager.default.removeItem(at: url) }; return
+                if let url = source.temporaryURL, !previewCache.contains(where: { $0.url == url }) {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                return
             }
             let item = source.item
             let next = AVPlayer(playerItem: item)
             next.automaticallyWaitsToMinimizeStalling = false
             detachObserver(); player?.pause(); player = nil; discardPreviewFile(); previewURL = source.temporaryURL; player = next
+            if let url = source.temporaryURL, !previewCache.contains(where: { $0.url == url }) {
+                rememberPreview(url, for: signature)
+            }
             observedPlayer = next
             statusObserver = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
                 Task { @MainActor in
