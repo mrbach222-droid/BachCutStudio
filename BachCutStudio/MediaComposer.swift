@@ -141,7 +141,7 @@ enum MediaComposer {
                   let track = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { throw StudioError.message("Tệp không có âm thanh") }
             let start = max(0, sound.offset)
             let available = try await source.load(.timeRange)
-            let length = min(available.duration.seconds, project.duration - start)
+            let length = min(sound.duration, available.duration.seconds, project.duration - start)
             guard length > 0 else { continue }
             try track.insertTimeRange(CMTimeRange(start: available.start, duration: time(length)), of: source, at: time(start))
             let mix = AVMutableAudioMixInputParameters(track: track)

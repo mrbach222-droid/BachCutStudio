@@ -37,6 +37,9 @@ struct AudioSegment: Identifiable, Codable, Equatable {
     var offset: Double = 0
     var sourceDuration: Double
     var volume: Double = 0.7
+    // nil means the entire original audio file, preserving older saved projects.
+    var trimDuration: Double? = nil
+    var duration: Double { max(0, min(sourceDuration, trimDuration ?? sourceDuration)) }
 }
 struct OverlaySegment: Identifiable, Codable, Equatable {
     var id = UUID()
