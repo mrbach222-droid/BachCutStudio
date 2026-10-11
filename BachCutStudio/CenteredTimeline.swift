@@ -42,7 +42,7 @@ struct CenteredTimeline: UIViewRepresentable {
     static func dismantleUIView(_ view: TimelineSurface, coordinator: ()) { view.cancelInteraction() }
 }
 
-final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
+final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout, UIGestureRecognizerDelegate {
     let layout = UICollectionViewFlowLayout()
     lazy var collection = UICollectionView(frame: .zero, collectionViewLayout: layout)
     private let canvas = TimelineMarks()
@@ -123,7 +123,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(longPress(_:)))
         hold.minimumPressDuration = 0.35; collection.addGestureRecognizer(hold)
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinchZoom(_:)))
-        collection.addGestureRecognizer(pinch)
+        addGestureRecognizer(pinch)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func layoutSubviews() {
@@ -214,7 +214,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
             if trackHandles[id] == nil {
                 let handle = TimelineTrackHandle(id: id, isOverlay: track.isOverlay)
                 let pan = UIPanGestureRecognizer(target: self, action: #selector(dragTrack(_:)))
-                pan.maximumNumberOfTouches = 1; handle.addGestureRecognizer(pan)
+                pan.maximumNumberOfTouches = 1; pan.delegate = self; handle.addGestureRecognizer(pan)
                 collection.panGestureRecognizer.require(toFail: pan)
                 let tap = UITapGestureRecognizer(target: self, action: #selector(tapTrackHandle(_:)))
                 handle.addGestureRecognizer(tap)
@@ -305,7 +305,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
                         self.onTrimItem?(key.id, key.kind, key.edge, delta)
                     }
                     let pan = UIPanGestureRecognizer(target: self, action: #selector(dragTrimHandle(_:)))
-                    pan.maximumNumberOfTouches = 1; handle.addGestureRecognizer(pan)
+                    pan.maximumNumberOfTouches = 1; pan.delegate = self; handle.addGestureRecognizer(pan)
                     insertSubview(handle, belowSubview: line); trimHandles[key] = handle
                 }
                 trimHandles[key]?.configure(label: item.label, color: item.color, enabled: enabled)
@@ -327,7 +327,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
             let width = CGFloat(span.duration * zoom)
             let leftCenter = min(max(6, x - 7), max(6, bounds.width - 6))
             let rightCenter = min(max(6, x + width + 7), max(6, bounds.width - 6))
-            let hitWidth = x >= 0 && x + width <= bounds.width
+            let hitWidth = x >= -8 && x + width <= bounds.width + 8
                 ? min(44, max(1, rightCenter - leftCenter)) : 44
             for edge in [TimelineTrimEdge.start, .end] {
                 let key = TrimKey(id: item.id, kind: item.kind, edge: edge)
@@ -337,7 +337,9 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
                 // Short ranges have disjoint hit regions, rather than one edge
                 // stealing the other's touches. Wider ranges get a 44 pt target.
                 handle.frame = CGRect(x: center - hitWidth / 2, y: item.y, width: hitWidth, height: item.height)
-                handle.isHidden = boundary < 0 || boundary > bounds.width
+                // Keep near-edge grips reachable, and never hide the view that
+                // owns an active gesture when its boundary leaves the viewport.
+                handle.isHidden = activeTrim?.key != key && (boundary < -8 || boundary > bounds.width + 8)
                 handle.accessibilityValue = formatTime(edge == .start ? span.sourceStart : span.sourceEnd)
             }
             if session != nil {
@@ -385,6 +387,12 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         session.current = span; session.delta = delta; activeTrim = session
         updateTrimFrames()
     }
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
+        let velocity = pan.velocity(in: self)
+        // Leave vertical movement to the enclosing editor scroll view.
+        return abs(velocity.x) > abs(velocity.y) && activeTrim == nil && draggingTrack == nil && !moving && !pinching && !userScrolling
+    }
     private func setTrimmedItemAlpha(_ alpha: CGFloat) {
         guard let session = activeTrim else { return }
         if session.key.kind == .video, let index = clips.firstIndex(where: { $0.id == session.key.id }) {
@@ -419,7 +427,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     @objc private func pinchZoom(_ gesture: UIPinchGestureRecognizer) {
         switch gesture.state {
         case .began:
-            guard !moving, activeTrim == nil, draggingTrack == nil else { return }
+            guard collection.isUserInteractionEnabled, !moving, activeTrim == nil, draggingTrack == nil else { return }
             pinching = true; pinchStartZoom = zoom
             if !userScrolling { onBeginScrub?() }
         case .changed:

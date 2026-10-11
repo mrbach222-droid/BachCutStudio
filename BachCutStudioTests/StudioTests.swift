@@ -613,6 +613,10 @@ final class StudioTests: XCTestCase {
         let end = try XCTUnwrap(view.subviews.first { $0.accessibilityIdentifier == "trimAudioEnd_" + sound.id.uuidString })
         XCTAssertLessThanOrEqual(start.frame.maxX, end.frame.minX + 0.001, "Tiny ranges must not have overlapping trim targets")
         XCTAssertEqual(start.accessibilityValue, "00:00.0"); XCTAssertEqual(end.accessibilityValue, "00:00.1")
+        view.frame.size.width = 382; view.layoutIfNeeded()
+        let videoEnd = try XCTUnwrap(view.subviews.first { $0.accessibilityIdentifier == "trimVideoEnd" })
+        XCTAssertFalse(videoEnd.isHidden, "The 8-second clip's near-edge grip must remain reachable on a 402 pt iPhone")
+        XCTAssertLessThan(videoEnd.frame.midX, view.bounds.width)
         var commits = 0
         view.onTrimItem = { id, kind, edge, delta in
             XCTAssertEqual(id, sound.id); XCTAssertEqual(kind, .audio); XCTAssertEqual(edge, .start)

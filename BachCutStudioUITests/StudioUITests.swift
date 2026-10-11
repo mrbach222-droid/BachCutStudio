@@ -259,6 +259,26 @@ final class StudioUITests: XCTestCase {
         audio.tap(); XCTAssertEqual(app.staticTexts["sourceStartTime"].label, source); app.buttons["Hủy"].tap()
     }
 
+    func testPinchAcrossSecondaryRowsKeepsPlayheadAndSourceRanges() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--uitesting-reset", "--uitesting-fixture", "--uitesting-multitrack"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 30)); app.staticTexts["Kiểm thử Studio"].tap(); waitForReady(app)
+        let timeline = app.collectionViews["centeredTimeline"]
+        let audioStart = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'trimAudioStart_' ")).firstMatch
+        let audioEnd = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'trimAudioEnd_' ")).firstMatch
+        let sourceStart = audioStart.value as? String, sourceEnd = audioEnd.value as? String
+        let time = app.staticTexts["playheadTime"].label
+        let zoom = app.sliders["timelineZoom"]
+        let originalZoom = zoom.value as? String
+        timeline.pinch(withScale: 1.3, velocity: 1)
+        let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", originalZoom ?? ""), object: zoom)
+        XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 5), .completed, "Pinching over secondary rows must zoom the native timeline")
+        XCTAssertEqual(app.staticTexts["playheadTime"].label, time)
+        XCTAssertEqual(audioStart.value as? String, sourceStart); XCTAssertEqual(audioEnd.value as? String, sourceEnd)
+        XCTAssertFalse(app.buttons["undo"].isEnabled, "A presentation-only zoom must not create an edit")
+    }
+
     func dragHandle(_ handle: XCUIElement, points: CGFloat) {
         XCTAssertTrue(handle.isHittable, "The trim grip must be visible and reachable")
         let from = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
