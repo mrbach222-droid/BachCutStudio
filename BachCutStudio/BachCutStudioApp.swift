@@ -196,7 +196,7 @@ func formatTime(_ value: Double) -> String {
     return String(format: "%02d:%04.1f", Int(safe) / 60, safe.truncatingRemainder(dividingBy: 60))
 }
 struct TrackTimingSelection: Identifiable {
-    enum Kind { case audio, overlay }
+    enum Kind: Equatable { case audio, overlay }
     let id: UUID
     let kind: Kind
 }
@@ -217,8 +217,9 @@ struct TrackTimingSheet: View {
         self.timelineLength = timelineLength
         self.playhead = playhead
         self.apply = apply
-        _offset = State(initialValue: offset)
-        _length = State(initialValue: length)
+        let start = min(max(0, offset), max(0, timelineLength - 0.05))
+        _offset = State(initialValue: start)
+        _length = State(initialValue: min(max(0.05, length), max(0.05, min(maxLength, timelineLength - start))))
     }
     private var maxOffset: Double { max(0, timelineLength - 0.05) }
     private var availableLength: Double { max(0.05, min(maxLength, timelineLength - offset)) }
