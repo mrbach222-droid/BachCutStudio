@@ -351,6 +351,35 @@ final class StudioTests: XCTestCase {
         let (image, _) = try await generator.image(at: MediaComposer.time(0.25))
         XCTAssertGreaterThan(pixel(image, x: image.width / 2, y: image.height / 2)[2], 170)
     }
+    func testNativeAudioOverlayDragGeometryAndClamping() {
+        XCTAssertEqual(TimelineSurface.clampedTrackOffset(start: 1, dragPoints: 80, zoom: 40,
+            timelineDuration: 8, trackDuration: 3), 3, accuracy: 0.001)
+        XCTAssertEqual(TimelineSurface.clampedTrackOffset(start: 1, dragPoints: 500, zoom: 40,
+            timelineDuration: 8, trackDuration: 3), 5, accuracy: 0.001)
+        XCTAssertEqual(TimelineSurface.clampedTrackOffset(start: 1, dragPoints: -500, zoom: 40,
+            timelineDuration: 8, trackDuration: 3), 0, accuracy: 0.001)
+        XCTAssertEqual(TimelineSurface.clampedTrackOffset(start: 1, dragPoints: .nan, zoom: 40,
+            timelineDuration: 8, trackDuration: 3), 0, accuracy: 0.001)
+        var project = StudioProject()
+        project.clips = [VideoSegment(url: URL(fileURLWithPath: "/main.mov"), start: 0, end: 8)]
+        let music = AudioSegment(url: URL(fileURLWithPath: "/music.caf"), offset: 1, sourceDuration: 3)
+        let overlay = OverlaySegment(clip: VideoSegment(url: URL(fileURLWithPath: "/pip.mov"), start: 0, end: 2), offset: 3)
+        project.audio = [music]; project.overlays = [overlay]
+        let view = TimelineSurface(frame: CGRect(x: 0, y: 0, width: 390, height: 192))
+        view.layoutIfNeeded()
+        view.apply(project: project, selected: project.clips[0].id, thumbnails: [:], zoom: 40, playhead: 2, enabled: true)
+        let musicHandle = view.subviews.first { $0.accessibilityIdentifier == "audioTrack_" + music.id.uuidString }
+        let overlayHandle = view.subviews.first { $0.accessibilityIdentifier == "overlayTrack_" + overlay.id.uuidString }
+        XCTAssertNotNil(musicHandle)
+        XCTAssertNotNil(overlayHandle)
+        XCTAssertEqual(musicHandle?.frame.minX ?? -1, 155, accuracy: 0.5)
+        XCTAssertEqual(overlayHandle?.frame.minX ?? -1, 235, accuracy: 0.5)
+        XCTAssertEqual(musicHandle?.frame.width ?? -1, 120, accuracy: 0.5)
+        XCTAssertEqual(overlayHandle?.frame.width ?? -1, 80, accuracy: 0.5)
+        // Source audio belongs to the canvas, not a movable handle.
+        XCTAssertEqual(view.subviews.filter { ($0.accessibilityIdentifier ?? "").hasPrefix("audioTrack_") }.count, 1)
+    }
+
     @MainActor func testAudioAndOverlayTimelineEditingPersistsAndChangesExport() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let red = root.appendingPathComponent("red.mov")
