@@ -40,15 +40,18 @@ struct AudioSegment: Identifiable, Codable, Equatable {
     // nil means the entire original audio file, preserving older saved projects.
     var trimDuration: Double? = nil
     var sourceStart: Double = 0
+    var fadeIn: Double = 0
+    var fadeOut: Double = 0
     var duration: Double {
         let available = max(0, sourceDuration - sourceStart)
         return max(0, min(available, trimDuration ?? available))
     }
-    enum CodingKeys: String, CodingKey { case id, url, offset, sourceDuration, volume, trimDuration, sourceStart }
+    enum CodingKeys: String, CodingKey { case id, url, offset, sourceDuration, volume, trimDuration, sourceStart, fadeIn, fadeOut }
     init(id: UUID = UUID(), url: URL, offset: Double = 0, sourceDuration: Double, volume: Double = 0.7,
-         trimDuration: Double? = nil, sourceStart: Double = 0) {
+         trimDuration: Double? = nil, sourceStart: Double = 0, fadeIn: Double = 0, fadeOut: Double = 0) {
         self.id = id; self.url = url; self.offset = offset; self.sourceDuration = sourceDuration
         self.volume = volume; self.trimDuration = trimDuration; self.sourceStart = sourceStart
+        self.fadeIn = fadeIn; self.fadeOut = fadeOut
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -58,6 +61,8 @@ struct AudioSegment: Identifiable, Codable, Equatable {
         volume = try c.decodeIfPresent(Double.self, forKey: .volume) ?? 0.7
         trimDuration = try c.decodeIfPresent(Double.self, forKey: .trimDuration)
         sourceStart = try c.decodeIfPresent(Double.self, forKey: .sourceStart) ?? 0
+        fadeIn = try c.decodeIfPresent(Double.self, forKey: .fadeIn) ?? 0
+        fadeOut = try c.decodeIfPresent(Double.self, forKey: .fadeOut) ?? 0
         normalize()
     }
     mutating func normalize() {
@@ -66,6 +71,8 @@ struct AudioSegment: Identifiable, Codable, Equatable {
         offset = offset.isFinite ? max(0, offset) : 0
         volume = volume.isFinite ? min(1, max(0, volume)) : 0.7
         if let length = trimDuration { trimDuration = length.isFinite ? min(max(0, length), max(0, sourceDuration - sourceStart)) : nil }
+        let fades = AudioEnvelope.bounded(fadeIn: fadeIn, fadeOut: fadeOut, length: duration)
+        fadeIn = fades.fadeIn; fadeOut = fades.fadeOut
     }
 }
 struct OverlaySegment: Identifiable, Codable, Equatable {

@@ -19,6 +19,7 @@ struct EditorScreen: View {
     @State private var showTrim = false
     @State private var showExport = false
     @State private var editingTrack: TrackTimingSelection?
+    @State private var fadingTrack: TrackTimingSelection?
     init(project: StudioProject, store: ProjectStore = ProjectStore()) { _model = StateObject(wrappedValue: EditorModel(project: project, store: store)) }
     var body: some View {
         GeometryReader { geo in
@@ -79,6 +80,13 @@ struct EditorScreen: View {
                                  sourceStart: overlay.clip.start, sourceDuration: overlay.clip.sourceDuration,
                                  sourceSpeed: overlay.clip.speed, timelineLength: model.duration, playhead: model.playhead) { start, source, length in
                     model.setOverlayTiming(overlay.id, offset: start, duration: length, sourceStart: source)
+                }
+            }
+        }
+        .sheet(item: $fadingTrack) { track in
+            if let sound = model.project.audio.first(where: { $0.id == track.id }) {
+                AudioEnvelopeSheet(sound: sound, length: min(sound.duration, max(0, model.duration - sound.offset))) { volume, incoming, outgoing in
+                    model.setAudioEnvelope(sound.id, volume: volume, fadeIn: incoming, fadeOut: outgoing)
                 }
             }
         }
@@ -181,10 +189,11 @@ struct EditorScreen: View {
                         ForEach(model.project.audio) { sound in
                             Menu("A2 · \(formatTime(sound.offset)) · \(formatTime(sound.duration))") {
                                 Button("Đổi vị trí và độ dài") { editingTrack = TrackTimingSelection(id: sound.id, kind: .audio) }
+                                Button("Âm lượng · Vào/ra dần") { model.pause(); fadingTrack = TrackTimingSelection(id: sound.id, kind: .audio) }.accessibilityIdentifier("editAudioEnvelope")
                                 Button("Âm lượng 50%") { model.audioVolume(sound.id, value: 0.5) }
                                 Button("Âm lượng 100%") { model.audioVolume(sound.id, value: 1) }
                                 Button("Xóa nhạc", role: .destructive) { model.removeAudio(sound.id) }
-                            }
+                            }.accessibilityIdentifier("audioMenu_" + sound.id.uuidString)
                         }
                     }.font(.caption).buttonStyle(.bordered)
                 }

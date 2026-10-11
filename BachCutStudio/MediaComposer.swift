@@ -152,7 +152,7 @@ enum MediaComposer {
             let sourceStart = CMTimeAdd(available.start, time(sourceOffset))
             try track.insertTimeRange(CMTimeRange(start: sourceStart, duration: time(length)), of: source, at: time(start))
             let mix = AVMutableAudioMixInputParameters(track: track)
-            mix.setVolume(Float(min(1, max(0, sound.volume))), at: time(start)); mixes.append(mix)
+            AudioEnvelope.apply(to: mix, sound: sound, start: start, length: length); mixes.append(mix)
         }
         let video = AVMutableVideoComposition()
         video.renderSize = canvas; video.frameDuration = CMTime(value: 1, timescale: Int32(options?.fps ?? 30)); video.instructions = finalInstructions
