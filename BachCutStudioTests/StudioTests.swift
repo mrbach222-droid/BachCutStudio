@@ -167,6 +167,39 @@ final class StudioTests: XCTestCase {
         let index = (y * image.width + x) * 4
         return Array(bytes[index..<index + 4])
     }
+    @MainActor func testCompositedPreviewReuseOnUndoRedoAndCleanup() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("red.mov")
+        try await TestMedia.video(to: source, color: .red, duration: 1)
+        var project = StudioProject()
+        project.clips = [VideoSegment(url: source, start: 0, end: 1)]
+        project.ratio = .square
+        let model = EditorModel(project: project, store: ProjectStore(root: root))
+        await model.start()
+        try await waitForPreview(model)
+        let firstURL = try XCTUnwrap((model.player?.currentItem?.asset as? AVURLAsset)?.url,
+                                    "Composited preview should have a rendered movie")
+        XCTAssertEqual(model.previewReuseCount, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: firstURL.path))
+        model.setRatio(.portrait)
+        try await waitForPreview(model)
+        let secondURL = try XCTUnwrap((model.player?.currentItem?.asset as? AVURLAsset)?.url)
+        XCTAssertNotEqual(firstURL, secondURL, "A different canvas requires different frames")
+        model.undo()
+        try await waitForPreview(model)
+        let reusedFirst = try XCTUnwrap((model.player?.currentItem?.asset as? AVURLAsset)?.url)
+        XCTAssertEqual(reusedFirst, firstURL, "Undo must reuse the existing preview instead of re-encoding")
+        XCTAssertGreaterThanOrEqual(model.previewReuseCount, 1)
+        model.redo()
+        try await waitForPreview(model)
+        let reusedSecond = try XCTUnwrap((model.player?.currentItem?.asset as? AVURLAsset)?.url)
+        XCTAssertEqual(reusedSecond, secondURL, "Redo must reuse its earlier composited preview")
+        XCTAssertGreaterThanOrEqual(model.previewReuseCount, 2)
+        model.close()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: secondURL.path))
+    }
+
     @MainActor func testModelImportEditingUndoPlaybackPersistenceAndExport() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("input.mov")
