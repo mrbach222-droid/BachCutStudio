@@ -29,8 +29,10 @@ final class StudioUITests: XCTestCase {
         if play.label == "Tạm dừng" { play.tap() }
         app.buttons["duplicateClip"].tap()
         XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn")
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
         app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch.tap()
         expectation(for: NSPredicate(format: "label == '00:08.0'"), evaluatedWith: time); waitForExpectations(timeout: 10)
+        XCTAssertEqual(play.label, "Phát", "Selecting a clip must pause at its edit point")
         app.descendants(matching: .any).matching(identifier: "clip_0").firstMatch.tap()
         expectation(for: NSPredicate(format: "label == '00:00.0'"), evaluatedWith: time); waitForExpectations(timeout: 10)
         app.buttons["undo"].tap(); XCTAssertEqual(app.staticTexts["clipCount"].label, "1 đoạn")

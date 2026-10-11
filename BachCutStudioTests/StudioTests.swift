@@ -200,6 +200,81 @@ final class StudioTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: secondURL.path))
     }
 
+    @MainActor func testSelectionHoldsFrameAndRejectsObsoleteEndNotification() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.mov")
+        try await TestMedia.video(to: source, color: .red, duration: 2)
+        let model = EditorModel(store: ProjectStore(root: root)); defer { model.close() }
+        await model.add(url: source); try await waitForPreview(model)
+        let oldItem = try XCTUnwrap(model.player?.currentItem)
+        // Queue the old timeline's end event immediately before extending it.
+        NotificationCenter.default.post(name: .AVPlayerItemDidPlayToEndTime, object: oldItem)
+        model.duplicateSelected()
+        model.select(model.clips[1].id)
+        try await waitForPreview(model)
+        XCTAssertEqual(model.playhead, 2, accuracy: 0.02)
+        XCTAssertEqual(model.player?.currentTime().seconds ?? -1, 2, accuracy: 0.02)
+        model.seek(0); model.togglePlayback()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        model.select(model.clips[1].id)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertFalse(model.playing)
+        XCTAssertEqual(model.player?.rate, 0)
+        XCTAssertEqual(model.playhead, 2, accuracy: 0.02)
+        XCTAssertEqual(model.player?.currentTime().seconds ?? -1, 2, accuracy: 0.02)
+    }
+
+    @MainActor func testLatestSeekSurvivesCompositedPreviewReplacementAndClose() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.mov")
+        try await TestMedia.video(to: source, color: .blue, duration: 2)
+        let model = EditorModel(store: ProjectStore(root: root)); defer { model.close() }
+        await model.add(url: source); try await waitForPreview(model)
+        model.setRatio(.square)
+        for index in 0..<30 {
+            model.seek(Double(index) / 20)
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+        model.seek(1.375)
+        try await waitForPreview(model)
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(model.playhead, 1.375, accuracy: 0.02)
+        XCTAssertEqual(model.player?.currentTime().seconds ?? -1, 1.375, accuracy: 0.02)
+        model.setRatio(.portrait)
+        // Allow replacement work to start, then close while it is suspended.
+        await Task.yield()
+        model.close()
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertNil(model.player, "A canceled rebuild must not reopen a closed editor")
+        XCTAssertFalse(model.playerReady)
+        XCTAssertFalse(model.rendering)
+        XCTAssertTrue(model.cachedPreviewURLs.isEmpty)
+    }
+
+    @MainActor func testPreviewCacheEvictsOldFilesAndRecoversDeletedEntry() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.mov")
+        try await TestMedia.video(to: source, color: .green, duration: 1)
+        var project = StudioProject(); project.ratio = .square
+        project.clips = [VideoSegment(url: source, start: 0, end: 1)]
+        let model = EditorModel(project: project, store: ProjectStore(root: root)); defer { model.close() }
+        await model.start(); try await waitForPreview(model)
+        let first = try XCTUnwrap(model.cachedPreviewURLs.first)
+        model.setRatio(.portrait); try await waitForPreview(model)
+        model.setRatio(.square); model.setVolume(0.75); try await waitForPreview(model)
+        model.setVolume(0.5); try await waitForPreview(model)
+        XCTAssertEqual(model.cachedPreviewURLs.count, 3)
+        XCTAssertLessThanOrEqual(model.cachedPreviewBytes, 256 * 1024 * 1024)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path), "Evicted preview files must be removed")
+        let unavailable = try XCTUnwrap(model.cachedPreviewURLs.dropFirst().first)
+        try FileManager.default.removeItem(at: unavailable)
+        model.undo(); try await waitForPreview(model)
+        let regenerated = try XCTUnwrap((model.player?.currentItem?.asset as? AVURLAsset)?.url)
+        XCTAssertNotEqual(regenerated, unavailable)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: regenerated.path))
+        XCTAssertEqual(model.cachedPreviewURLs.count, 3)
+    }
+
     @MainActor func testModelImportEditingUndoPlaybackPersistenceAndExport() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("input.mov")

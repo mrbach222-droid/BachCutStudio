@@ -55,6 +55,8 @@ import Photos
     private let maxPreviewBytes: UInt64 = 256 * 1024 * 1024
     #if DEBUG
     private(set) var previewReuseCount = 0
+    var cachedPreviewURLs: [URL] { previewCache.map(\.url) }
+    var cachedPreviewBytes: UInt64 { previewCache.reduce(0) { $0 + $1.bytes } }
     #endif
     private var thumbnailSources: [UUID: VideoSegment] = [:]
     #if DEBUG
@@ -88,8 +90,10 @@ import Photos
         for cached in previewCache { try? FileManager.default.removeItem(at: cached.url) }
     }
     func close() {
-        recordEvent("close"); player?.pause(); playing = false; detachObserver()
+        recordEvent("close"); revision += 1; playbackRevision += 1
+        player?.pause(); playing = false; playerReady = false; detachObserver()
         rebuildTask?.cancel(); exportTask?.cancel(); player = nil
+        seekOperation = nil; pendingSeek = nil; rendering = false
         discardPreviewFile(); clearCachedPreviews()
     }
     private func clearCachedPreviews() {
@@ -181,7 +185,12 @@ import Photos
             progress = "Đã nhập và lưu dự án"
         } catch { if let copy { try? FileManager.default.removeItem(at: copy) }; progress = "Không nhập được: " + error.localizedDescription }
     }
-    func select(_ id: UUID) { selected = id; seek(project.startTime(of: id)) }
+    func select(_ id: UUID) {
+        guard clips.contains(where: { $0.id == id }) else { return }
+        // Selecting an edit point must hold that frame, including while a
+        // replacement preview is being prepared. It must not resume playback.
+        pause(); selected = id; seek(project.startTime(of: id))
+    }
     func trim(_ id: UUID, start: Double? = nil, end: Double? = nil) {
         edit { p in
             guard let i = p.clips.firstIndex(where: { $0.id == id }) else { return }
@@ -324,20 +333,36 @@ import Photos
                     if item.status == .failed { self.pause(); self.progress = "Lỗi preview: " + (item.error?.localizedDescription ?? "Không đọc được video") }
                 }
             }
-            observer = next.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] time in
+            observer = next.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self, weak next] time in
                 Task { @MainActor in
-                    guard let self, self.player === next else { return }
+                    guard let self, let next, self.player === next, !self.rendering else { return }
                     let value = time.seconds
                     if next.rate > 0 && value.isFinite && !self.scrubbing && self.seekOperation == nil && self.pendingSeek == nil { self.playhead = min(self.duration, max(0, value)) }
                     self.playing = next.rate > 0
                 }
             }
-            endObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.playing = false; if let self { self.playhead = self.duration } }
+            endObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self, weak next, weak item] _ in
+                Task { @MainActor in
+                    // A queued end notification can outlive its player, a seek
+                    // or a pause. Never let it overwrite a newer edit point.
+                    guard let self, let next, let item, self.player === next,
+                          next.currentItem === item, !self.rendering,
+                          self.seekOperation == nil, self.pendingSeek == nil,
+                          next.currentTime().seconds >= self.duration - 0.05 else { return }
+                    self.playing = false; self.playhead = self.duration
+                }
             }
-            let position = oldSeek == seekRevision ? oldTime : playhead
-            await next.seek(to: MediaComposer.time(min(position, duration)), toleranceBefore: .zero, toleranceAfter: .zero)
-            guard token == revision, !Task.isCancelled, player === next else { return }
+            // User input may arrive while AVFoundation awaits this initial
+            // seek. Restore the latest requested time before releasing the
+            // render gate instead of dropping a seek made during that await.
+            var position = oldSeek == seekRevision ? oldTime : playhead
+            while true {
+                let requestedRevision = seekRevision
+                await next.seek(to: MediaComposer.time(min(position, duration)), toleranceBefore: .zero, toleranceAfter: .zero)
+                guard token == revision, !Task.isCancelled, player === next else { return }
+                if requestedRevision == seekRevision { break }
+                position = playhead
+            }
             pendingSeek = nil
             if shouldResume && oldPlayback == playbackRevision { next.playImmediately(atRate: 1); playing = true }
         } catch {
