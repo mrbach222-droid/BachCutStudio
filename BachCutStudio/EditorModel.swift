@@ -155,6 +155,35 @@ import Photos
     func removeAudio(_ id: UUID) { edit { $0.audio.removeAll { $0.id == id } } }
     func audioVolume(_ id: UUID, value: Double) { edit { p in if let i = p.audio.firstIndex(where: { $0.id == id }) { p.audio[i].volume = min(1, max(0, value)) } } }
     func removeOverlay(_ id: UUID) { edit { $0.overlays.removeAll { $0.id == id } } }
+
+    // Commit drag/slider edits once (on Apply), preserving one clean undo step.
+    // Offsets are relative to the project's playhead and trimmed lengths never
+    // exceed the underlying media or the available base-video timeline.
+    func setAudioTiming(_ id: UUID, offset: Double, duration: Double) {
+        guard offset.isFinite, duration.isFinite else { return }
+        edit { project in
+            guard let index = project.audio.firstIndex(where: { $0.id == id }), project.duration >= 0.05 else { return }
+            let start = min(max(0, offset), max(0, project.duration - 0.05))
+            let available = min(project.audio[index].sourceDuration, project.duration - start)
+            guard available >= 0.05 else { return }
+            project.audio[index].offset = start
+            project.audio[index].trimDuration = min(available, max(0.05, duration))
+        }
+    }
+    func setOverlayTiming(_ id: UUID, offset: Double, duration: Double) {
+        guard offset.isFinite, duration.isFinite else { return }
+        edit { project in
+            guard let index = project.overlays.firstIndex(where: { $0.id == id }), project.duration >= 0.05 else { return }
+            let start = min(max(0, offset), max(0, project.duration - 0.05))
+            var clip = project.overlays[index].clip
+            let available = min((clip.sourceDuration - clip.start) / clip.speed, project.duration - start)
+            guard available >= 0.05 else { return }
+            clip.end = min(clip.sourceDuration, clip.start + min(available, max(0.05, duration)) * clip.speed)
+            clip.normalize()
+            project.overlays[index].offset = start
+            project.overlays[index].clip = clip
+        }
+    }
     func beginScrub() { pause(); scrubbing = true }
     func endScrub(_ value: Double) { scrubbing = false; seek(value) }
     func seek(_ value: Double) {
