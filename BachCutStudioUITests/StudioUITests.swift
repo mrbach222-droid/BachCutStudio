@@ -46,6 +46,8 @@ final class StudioUITests: XCTestCase {
         export.tap()
         XCTAssertTrue(app.buttons["confirmExport"].waitForExistence(timeout: 10))
         app.buttons["exportResolution"].tap(); app.buttons["480p"].tap()
+        // Let the native picker dismissal finish before preserving its image.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.8))
         let settings = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); settings.name = "Export options"; settings.lifetime = .keepAlways; add(settings)
         app.buttons["confirmExport"].tap()
         XCTAssertTrue(app.staticTexts["Đã xuất MP4 thành công"].waitForExistence(timeout: 40))
