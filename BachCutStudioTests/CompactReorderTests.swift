@@ -78,12 +78,16 @@ final class CompactReorderTests: XCTestCase {
         let p = project(count: 4)
         let view = TimelineSurface(frame: CGRect(x: 0, y: 0, width: 390, height: 140)); view.layoutIfNeeded()
         var commits = 0; view.onMove = { _, _ in commits += 1 }
-        for reason in 0..<3 {
+        for reason in 0..<4 {
             view.apply(project: p, selected: p.clips[0].id, thumbnails: [:], zoom: 24, playhead: 2, enabled: true)
             XCTAssertTrue(view.beginReorder(at: 0, point: CGPoint(x: 195, y: 58)))
             UIView.performWithoutAnimation { view.updateReorder(at: CGPoint(x: 370, y: 58)) }
             if reason == 0 { view.frame.size.width = 700; view.setNeedsLayout(); view.layoutIfNeeded() }
-            else { view.apply(project: p, selected: p.clips[0].id, thumbnails: [:], zoom: reason == 1 ? 48 : 24, playhead: 2, enabled: reason != 2) }
+            else {
+                var next = p
+                if reason == 3 { next.id = UUID() }
+                view.apply(project: next, selected: p.clips[0].id, thumbnails: [:], zoom: reason == 1 ? 48 : 24, playhead: 2, enabled: reason != 2)
+            }
             view.finishReorder(commit: true)
             XCTAssertEqual(commits, 0); XCTAssertTrue(view.collection.isScrollEnabled)
             XCTAssertTrue(view.subviews.first { $0.accessibilityIdentifier == "reorderInsertion" }!.isHidden)
@@ -109,12 +113,63 @@ final class CompactReorderTests: XCTestCase {
         for width in [CGFloat(390), CGFloat(700)] {
             window.frame.size.width = width; view.frame = window.bounds; view.setNeedsLayout(); view.layoutIfNeeded()
             XCTAssertTrue(view.beginReorder(at: 3, point: CGPoint(x: width / 2, y: 58)))
-            UIView.performWithoutAnimation { view.updateReorder(at: CGPoint(x: 128 - view.collection.contentOffset.x, y: 130)) }
+            UIView.performWithoutAnimation { view.updateReorder(at: CGPoint(x: 216 - view.collection.contentOffset.x, y: 130)) }
             view.layoutIfNeeded()
             let image = UIGraphicsImageRenderer(bounds: view.bounds).image { view.layer.render(in: $0.cgContext) }
             let shot = XCTAttachment(image: image); shot.name = "Native held insertion \(Int(width))pt"; shot.lifetime = .keepAlways; add(shot)
-            XCTAssertEqual(view.subviews.first { $0.accessibilityIdentifier == "reorderInsertion" }!.accessibilityValue, "2/4")
+            XCTAssertEqual(view.subviews.first { $0.accessibilityIdentifier == "reorderInsertion" }!.accessibilityValue, "3/4")
             view.finishReorder(commit: false)
+        }
+    }
+    @MainActor func testReleasedInsertionExportsCorrectSourceOrderAndPersistsHistory() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ProjectStore(root: root); try store.prepare()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var p = StudioProject()
+        for (index, color) in [UIColor.red, .green, .blue].enumerated() {
+            let url = store.mediaDirectory.appendingPathComponent("\(index).mov")
+            try await TestMedia.video(to: url, color: color, duration: 2)
+            p.clips.append(VideoSegment(url: url, start: index == 1 ? 0 : 0.25,
+                                        end: index == 1 ? 2 : 1.25, sourceDuration: 2, speed: index == 0 ? 2 : 1))
+        }
+        let model = EditorModel(project: p, store: store); defer { model.close() }
+        model.seek(1.25); await model.start()
+        let view = TimelineSurface(frame: CGRect(x: 0, y: 0, width: 390, height: 140)); view.layoutIfNeeded()
+        view.apply(project: p, selected: p.clips[2].id, thumbnails: [:], zoom: 80, playhead: 1.25, enabled: true)
+        view.onBeginMove = { model.pause(); model.selected = $0 }; view.onMove = model.moveClip
+        XCTAssertTrue(view.beginReorder(at: 2, point: CGPoint(x: 195, y: 58)))
+        defer { view.cancelInteraction() }
+        UIView.performWithoutAnimation {
+            view.updateReorder(at: CGPoint(x: 107, y: 170))
+            view.updateReorder(at: CGPoint(x: 195, y: 170))
+            view.updateReorder(at: CGPoint(x: 107, y: 170))
+        }
+        XCTAssertEqual(model.project, p); XCTAssertTrue(model.undoStack.isEmpty)
+        view.finishReorder(commit: true)
+        let expected = [p.clips[0], p.clips[2], p.clips[1]]
+        XCTAssertEqual(model.clips, expected); XCTAssertEqual(model.undoStack.count, 1)
+        XCTAssertEqual(model.playhead, 1.25, accuracy: 0.001)
+        model.undo(); XCTAssertEqual(model.clips, p.clips)
+        model.redo(); XCTAssertEqual(model.clips, expected)
+        XCTAssertTrue(model.saveProject()); XCTAssertEqual(try store.list().first?.clips, expected)
+        let composition = try await MediaComposer.build(model.project)
+        let output = root.appendingPathComponent("reordered.mp4")
+        try await MediaComposer.export(composition, to: output)
+        let asset = AVURLAsset(url: output)
+        let length = try await asset.load(.duration)
+        XCTAssertEqual(length.seconds, 3.5, accuracy: 0.08)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+        for (time, channel) in [(0.2, 0), (0.8, 2), (2.0, 1)] {
+            let (image, _) = try await generator.image(at: MediaComposer.time(time))
+            var rgba = [UInt8](repeating: 0, count: 4)
+            rgba.withUnsafeMutableBytes { bytes in
+                let context = CGContext(data: bytes.baseAddress, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            }
+            XCTAssertGreaterThan(rgba[channel], 180, "Exported frames must follow the released insertion order")
+            for other in 0..<3 where other != channel { XCTAssertLessThan(rgba[other], 80) }
         }
     }
 }

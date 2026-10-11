@@ -49,6 +49,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     private let line = UIView()
     private let timeLabel = UILabel()
     private var clips: [VideoSegment] = []
+    private var projectID: UUID?
     private var tracks: [TimelineTrack] = []
     private var trackHandles: [UUID: TimelineTrackHandle] = [:]
     private var draggingTrack: UUID?
@@ -172,9 +173,10 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         updateMarks()
     }
     func apply(project: StudioProject, selected: UUID?, thumbnails: [UUID: [UIImage]], zoom: Double, playhead: Double, enabled: Bool) {
-        if let session = reorderSession, !enabled || project.clips != session.original || self.zoom != zoom {
+        if let session = reorderSession, !enabled || projectID != project.id || project.clips != session.original || self.zoom != zoom {
             finishReorder(commit: false)
         }
+        projectID = project.id
         if let session = activeTrim,
            !enabled || self.zoom != zoom || project.duration != session.timelineDuration ||
            project.trimSpan(id: session.key.id, kind: session.key.kind) != session.original ||

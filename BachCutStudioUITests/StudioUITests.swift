@@ -137,8 +137,8 @@ final class StudioUITests: XCTestCase {
         XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "clip_4").firstMatch.value as? String, firstID,
                        "Dropping below the row must insert between clips instead of abandoning the gesture")
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); shot.name = "Compact reorder inserted between clips portrait"; shot.lifetime = .keepAlways; add(shot)
-        XCUIDevice.shared.orientation = .landscapeLeft
-        XCTAssertTrue(app.staticTexts["Landscape Pro"].waitForExistence(timeout: 5))
+        rotateAndSettle(app, landscape: true)
+        XCTAssertTrue(app.buttons["exportVideo"].waitForExistence(timeout: 10))
         let landscape = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); landscape.name = "Compact reorder landscape editor"; landscape.lifetime = .keepAlways; add(landscape)
         app.terminate(); app.launchArguments = ["--uitesting"]; app.launch()
         XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 15)); app.staticTexts["Kiểm thử Studio"].tap()
