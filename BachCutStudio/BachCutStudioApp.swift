@@ -22,13 +22,17 @@ struct EditorScreen: View {
         GeometryReader { geo in
             let wide = verticalClass == .compact
             VStack(spacing: 8) {
-                header
                 if wide {
                     HStack(spacing: 12) {
+                        header.frame(width: geo.size.width * 0.34)
+                        controls.frame(maxWidth: .infinity)
+                    }
+                    HStack(spacing: 12) {
                         VStack { preview; transport }.frame(width: geo.size.width * 0.34)
-                        ScrollView { controls; timeline; tools; messages }.frame(maxWidth: .infinity)
+                        ScrollView { timeline; tools; messages }.frame(maxWidth: .infinity)
                     }
                 } else {
+                    header
                     preview.frame(height: min(geo.size.height * 0.31, 270))
                     transport
                     ScrollView { controls; timeline; tools; messages }

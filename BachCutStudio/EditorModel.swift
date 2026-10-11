@@ -150,6 +150,9 @@ import Photos
         project.modified = Date()
         if !clips.contains(where: { $0.id == selected }) { selected = clips.first?.id }
         playhead = min(playhead, duration); exportedURL = nil
+        // Invalidate readiness synchronously, before the queued rebuild starts.
+        // Export and playback must not slip through using the previous range.
+        playerReady = false; rendering = !clips.isEmpty
         saveProject(); revision += 1
         rebuildTask?.cancel()
         let requestedRevision = revision
@@ -367,7 +370,7 @@ import Photos
             observedPlayer = next
             statusObserver = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
                 Task { @MainActor in
-                    guard let self, self.player?.currentItem === item else { return }
+                    guard let self, token == self.revision, self.player?.currentItem === item else { return }
                     self.playerReady = item.status == .readyToPlay
                     if item.status == .failed { self.pause(); self.progress = "Lỗi preview: " + (item.error?.localizedDescription ?? "Không đọc được video") }
                 }

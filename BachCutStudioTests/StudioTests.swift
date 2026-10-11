@@ -504,6 +504,13 @@ final class StudioTests: XCTestCase {
         try await TestMedia.video(to: red, color: .red, duration: 3)
         try await TestMedia.video(to: blue, color: .blue, duration: 2)
         try TestMedia.audio(to: tone, duration: 3)
+        // Validate encoded inputs too: codec failures should identify whether
+        // source generation or the composed export produced the wrong frame.
+        for (url, channel) in [(red, 0), (blue, 2)] {
+            let source = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+            let (frame, _) = try await source.image(at: MediaComposer.time(0.3))
+            XCTAssertGreaterThan(pixel(frame, x: 120, y: 18)[channel], 180)
+        }
         var project = StudioProject()
         project.clips = [VideoSegment(url: red, start: 0, end: 3)]
         let audio = AudioSegment(url: tone, sourceDuration: 3)
@@ -548,6 +555,7 @@ final class StudioTests: XCTestCase {
         model.redo()
         XCTAssertEqual(model.project.overlays[0].offset, 1.2, accuracy: 0.001)
         XCTAssertEqual(model.project.overlays[0].clip.duration, 0.5, accuracy: 0.001)
+        try await waitForPreview(model)
         let rendered = try await MediaComposer.build(model.project)
         let output = root.appendingPathComponent("repositioned.mp4")
         try await MediaComposer.export(rendered, to: output)
@@ -557,6 +565,9 @@ final class StudioTests: XCTestCase {
         generator.requestedTimeToleranceAfter = .zero
         let (before, _) = try await generator.image(at: MediaComposer.time(0.3))
         let (during, _) = try await generator.image(at: MediaComposer.time(1.4))
+        for (name, image) in [("Repositioned export before overlay", before), ("Repositioned export during overlay", during)] {
+            let attachment = XCTAttachment(image: UIImage(cgImage: image)); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+        }
         XCTAssertGreaterThan(pixel(before, x: 120, y: 18)[0], 180)
         XCTAssertGreaterThan(pixel(during, x: 120, y: 18)[2], 150)
         let beforeAudio = try await audioPeak(asset: asset, start: 0.05, length: 0.2)
@@ -652,6 +663,9 @@ final class StudioTests: XCTestCase {
         let model = EditorModel(project: project, store: store); defer { model.close() }
         await model.start(); try await waitForPreview(model); model.seek(0.4)
         model.trimTimelineItem(main.id, kind: .video, edge: .start, delta: 0.5)
+        XCTAssertTrue(model.rendering); XCTAssertFalse(model.playerReady)
+        await model.export()
+        XCTAssertNil(model.exportedURL, "Export must wait for the newly edited preview, including before its rebuild task starts")
         try await waitForPreview(model)
         XCTAssertEqual(model.project.clips[0].start, 1); XCTAssertEqual(model.undoStack.count, 1)
         XCTAssertEqual(model.project.startTime(of: tail.id), 1)
