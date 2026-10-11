@@ -182,6 +182,113 @@ final class StudioUITests: XCTestCase {
         overlay.tap(); XCTAssertEqual(app.staticTexts["sourceStartTime"].label, "00:00.2"); app.buttons["Hủy"].tap()
     }
 
+    func testDirectVideoEdgeTrimUndoRotationAndRelaunch() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--uitesting-reset", "--uitesting-fixture"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 30)); app.staticTexts["Kiểm thử Studio"].tap()
+        waitForReady(app)
+        let start = app.descendants(matching: .any).matching(identifier: "trimVideoStart").firstMatch
+        let end = app.descendants(matching: .any).matching(identifier: "trimVideoEnd").firstMatch
+        XCTAssertTrue(start.waitForExistence(timeout: 10)); XCTAssertTrue(end.isHittable)
+        let timeBefore = app.staticTexts["playheadTime"].label
+        dragHandle(end, points: -40); waitForReady(app)
+        let trimmedEnd = end.value as? String
+        XCTAssertNotEqual(trimmedEnd, "00:08.0", "The right grip must change the source out-point")
+        XCTAssertEqual(start.value as? String, "00:00.0")
+        XCTAssertEqual(app.staticTexts["playheadTime"].label, timeBefore)
+        app.buttons["undo"].tap(); waitForReady(app)
+        XCTAssertEqual(end.value as? String, "00:08.0", "One undo must reverse the entire drag")
+        app.buttons["redo"].tap(); waitForReady(app); XCTAssertEqual(end.value as? String, trimmedEnd)
+        dragHandle(start, points: 30); waitForReady(app)
+        let trimmedStart = start.value as? String
+        XCTAssertNotEqual(trimmedStart, "00:00.0"); XCTAssertEqual(end.value as? String, trimmedEnd)
+        XCTAssertEqual(app.staticTexts["clipCount"].label, "1 đoạn")
+        let portrait = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); portrait.name = "Direct video trim portrait"; portrait.lifetime = .keepAlways; add(portrait)
+        rotateAndSettle(app, landscape: true)
+        XCTAssertEqual(start.value as? String, trimmedStart); XCTAssertEqual(end.value as? String, trimmedEnd)
+        let landscape = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); landscape.name = "Direct video trim landscape"; landscape.lifetime = .keepAlways; add(landscape)
+        app.buttons["undo"].tap(); waitForReady(app)
+        XCTAssertEqual(start.value as? String, "00:00.0"); XCTAssertEqual(end.value as? String, trimmedEnd)
+        app.buttons["redo"].tap(); waitForReady(app)
+        app.terminate(); app.launchArguments = ["--uitesting"]; app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 20)); app.staticTexts["Kiểm thử Studio"].tap(); waitForReady(app)
+        XCTAssertEqual(start.value as? String, trimmedStart); XCTAssertEqual(end.value as? String, trimmedEnd)
+    }
+
+    func testDirectSecondaryEdgeTrimUndoAndPersistence() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--uitesting-reset", "--uitesting-fixture", "--uitesting-multitrack"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 30)); app.staticTexts["Kiểm thử Studio"].tap(); waitForReady(app)
+        func grip(_ prefix: String) -> XCUIElement {
+            app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", prefix)).firstMatch
+        }
+        let audio = grip("audioTrack_"), overlay = grip("overlayTrack_")
+        let audioStart = grip("trimAudioStart_"), audioEnd = grip("trimAudioEnd_")
+        let overlayStart = grip("trimOverlayStart_"), overlayEnd = grip("trimOverlayEnd_")
+        XCTAssertTrue(audioStart.waitForExistence(timeout: 10)); XCTAssertTrue(audioStart.isHittable)
+        dragHandle(audioStart, points: 24); waitForReady(app)
+        let source = audioStart.value as? String, offset = audio.value as? String
+        XCTAssertNotEqual(source, "00:00.0"); XCTAssertNotEqual(offset, "00:01.0")
+        XCTAssertEqual(audioEnd.value as? String, "00:04.0")
+        dragHandle(audioEnd, points: -24); waitForReady(app)
+        let soundEnd = audioEnd.value as? String
+        XCTAssertNotEqual(soundEnd, "00:04.0"); XCTAssertEqual(audioStart.value as? String, source)
+        XCTAssertEqual(audio.value as? String, offset)
+        app.buttons["undo"].tap(); waitForReady(app)
+        XCTAssertEqual(audioEnd.value as? String, "00:04.0"); XCTAssertEqual(audioStart.value as? String, source)
+        app.buttons["redo"].tap(); waitForReady(app)
+        dragHandle(overlayEnd, points: -16); waitForReady(app)
+        let overlayOut = overlayEnd.value as? String
+        XCTAssertNotEqual(overlayOut, "00:02.0"); XCTAssertEqual(overlay.value as? String, "00:02.0")
+        dragHandle(overlayStart, points: 16); waitForReady(app)
+        let overlayIn = overlayStart.value as? String, overlayOffset = overlay.value as? String
+        XCTAssertNotEqual(overlayIn, "00:00.0"); XCTAssertNotEqual(overlayOffset, "00:02.0")
+        XCTAssertEqual(overlayEnd.value as? String, overlayOut)
+        let portrait = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); portrait.name = "Direct secondary trim portrait"; portrait.lifetime = .keepAlways; add(portrait)
+        rotateAndSettle(app, landscape: true)
+        XCTAssertTrue(audioStart.isHittable); XCTAssertTrue(audioEnd.isHittable)
+        XCTAssertTrue(overlayStart.isHittable); XCTAssertTrue(overlayEnd.isHittable)
+        let landscape = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); landscape.name = "Direct secondary trim landscape"; landscape.lifetime = .keepAlways; add(landscape)
+        app.buttons["undo"].tap(); waitForReady(app)
+        XCTAssertEqual(overlayStart.value as? String, "00:00.0"); XCTAssertEqual(overlayEnd.value as? String, overlayOut)
+        app.buttons["redo"].tap(); waitForReady(app)
+        app.terminate(); app.launchArguments = ["--uitesting"]; app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 20)); app.staticTexts["Kiểm thử Studio"].tap(); waitForReady(app)
+        XCTAssertEqual(audioStart.value as? String, source); XCTAssertEqual(audioEnd.value as? String, soundEnd)
+        XCTAssertEqual(audio.value as? String, offset)
+        XCTAssertEqual(overlayStart.value as? String, overlayIn); XCTAssertEqual(overlayEnd.value as? String, overlayOut)
+        XCTAssertEqual(overlay.value as? String, overlayOffset)
+        audio.tap(); XCTAssertEqual(app.staticTexts["sourceStartTime"].label, source); app.buttons["Hủy"].tap()
+    }
+
+    func testPinchAcrossSecondaryRowsKeepsPlayheadAndSourceRanges() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--uitesting-reset", "--uitesting-fixture", "--uitesting-multitrack"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 30)); app.staticTexts["Kiểm thử Studio"].tap(); waitForReady(app)
+        let timeline = app.collectionViews["centeredTimeline"]
+        let audioStart = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'trimAudioStart_' ")).firstMatch
+        let audioEnd = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'trimAudioEnd_' ")).firstMatch
+        let sourceStart = audioStart.value as? String, sourceEnd = audioEnd.value as? String
+        let time = app.staticTexts["playheadTime"].label
+        let zoom = app.sliders["timelineZoom"]
+        let originalZoom = zoom.value as? String
+        timeline.pinch(withScale: 1.3, velocity: 1)
+        let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", originalZoom ?? ""), object: zoom)
+        XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 5), .completed, "Pinching over secondary rows must zoom the native timeline")
+        XCTAssertEqual(app.staticTexts["playheadTime"].label, time)
+        XCTAssertEqual(audioStart.value as? String, sourceStart); XCTAssertEqual(audioEnd.value as? String, sourceEnd)
+        XCTAssertFalse(app.buttons["undo"].isEnabled, "A presentation-only zoom must not create an edit")
+    }
+
+    func dragHandle(_ handle: XCUIElement, points: CGFloat) {
+        XCTAssertTrue(handle.isHittable, "The trim grip must be visible and reachable")
+        let from = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        from.press(forDuration: 0.05, thenDragTo: from.withOffset(CGVector(dx: points, dy: 0)))
+    }
+
     func waitForReady(_ app: XCUIApplication) {
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["playPause"])
         let result = XCTWaiter.wait(for: [ready], timeout: 20)

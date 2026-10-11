@@ -150,6 +150,9 @@ import Photos
         project.modified = Date()
         if !clips.contains(where: { $0.id == selected }) { selected = clips.first?.id }
         playhead = min(playhead, duration); exportedURL = nil
+        // Invalidate readiness synchronously, before the queued rebuild starts.
+        // Export and playback must not slip through using the previous range.
+        playerReady = false; rendering = !clips.isEmpty
         saveProject(); revision += 1
         rebuildTask?.cancel()
         let requestedRevision = revision
@@ -230,6 +233,33 @@ import Photos
     func removeAudio(_ id: UUID) { edit { $0.audio.removeAll { $0.id == id } } }
     func audioVolume(_ id: UUID, value: Double) { edit { p in if let i = p.audio.firstIndex(where: { $0.id == id }) { p.audio[i].volume = min(1, max(0, value)) } } }
     func removeOverlay(_ id: UUID) { edit { $0.overlays.removeAll { $0.id == id } } }
+
+    // A native handle drag produces one mutation on release, never one per frame.
+    func trimTimelineItem(_ id: UUID, kind: TimelineItemKind, edge: TimelineTrimEdge, delta: Double) {
+        guard !busy, let original = project.trimSpan(id: id, kind: kind),
+              let next = original.adjusted(edge: edge, delta: delta, kind: kind, timelineDuration: duration),
+              abs(next.sourceStart - original.sourceStart) > 0.000001 ||
+              abs(next.sourceEnd - original.sourceEnd) > 0.000001 else { return }
+        pause()
+        edit { project in
+            switch kind {
+            case .video:
+                guard let index = project.clips.firstIndex(where: { $0.id == id }) else { return }
+                project.clips[index].start = next.sourceStart
+                project.clips[index].end = next.sourceEnd
+            case .audio:
+                guard let index = project.audio.firstIndex(where: { $0.id == id }) else { return }
+                project.audio[index].offset = next.offset
+                project.audio[index].sourceStart = next.sourceStart
+                project.audio[index].trimDuration = next.duration
+            case .overlay:
+                guard let index = project.overlays.firstIndex(where: { $0.id == id }) else { return }
+                project.overlays[index].offset = next.offset
+                project.overlays[index].clip.start = next.sourceStart
+                project.overlays[index].clip.end = next.sourceEnd
+            }
+        }
+    }
 
     // Commit drag/slider edits once (on Apply), preserving one clean undo step.
     // Offsets are relative to the project's playhead and trimmed lengths never
@@ -340,7 +370,7 @@ import Photos
             observedPlayer = next
             statusObserver = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
                 Task { @MainActor in
-                    guard let self, self.player?.currentItem === item else { return }
+                    guard let self, token == self.revision, self.player?.currentItem === item else { return }
                     self.playerReady = item.status == .readyToPlay
                     if item.status == .failed { self.pause(); self.progress = "Lỗi preview: " + (item.error?.localizedDescription ?? "Không đọc được video") }
                 }

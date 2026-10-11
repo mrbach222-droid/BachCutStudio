@@ -504,6 +504,13 @@ final class StudioTests: XCTestCase {
         try await TestMedia.video(to: red, color: .red, duration: 3)
         try await TestMedia.video(to: blue, color: .blue, duration: 2)
         try TestMedia.audio(to: tone, duration: 3)
+        // Validate encoded inputs too: codec failures should identify whether
+        // source generation or the composed export produced the wrong frame.
+        for (url, channel) in [(red, 0), (blue, 2)] {
+            let source = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+            let (frame, _) = try await source.image(at: MediaComposer.time(0.3))
+            XCTAssertGreaterThan(pixel(frame, x: 120, y: 18)[channel], 180)
+        }
         var project = StudioProject()
         project.clips = [VideoSegment(url: red, start: 0, end: 3)]
         let audio = AudioSegment(url: tone, sourceDuration: 3)
@@ -548,6 +555,7 @@ final class StudioTests: XCTestCase {
         model.redo()
         XCTAssertEqual(model.project.overlays[0].offset, 1.2, accuracy: 0.001)
         XCTAssertEqual(model.project.overlays[0].clip.duration, 0.5, accuracy: 0.001)
+        try await waitForPreview(model)
         let rendered = try await MediaComposer.build(model.project)
         let output = root.appendingPathComponent("repositioned.mp4")
         try await MediaComposer.export(rendered, to: output)
@@ -557,6 +565,9 @@ final class StudioTests: XCTestCase {
         generator.requestedTimeToleranceAfter = .zero
         let (before, _) = try await generator.image(at: MediaComposer.time(0.3))
         let (during, _) = try await generator.image(at: MediaComposer.time(1.4))
+        for (name, image) in [("Repositioned export before overlay", before), ("Repositioned export during overlay", during)] {
+            let attachment = XCTAttachment(image: UIImage(cgImage: image)); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+        }
         XCTAssertGreaterThan(pixel(before, x: 120, y: 18)[0], 180)
         XCTAssertGreaterThan(pixel(during, x: 120, y: 18)[2], 150)
         let beforeAudio = try await audioPeak(asset: asset, start: 0.05, length: 0.2)
@@ -576,6 +587,165 @@ final class StudioTests: XCTestCase {
         var invalid = AudioSegment(url: sound.url, offset: -.infinity, sourceDuration: 4, volume: .nan, trimDuration: 100, sourceStart: 3.75)
         invalid.normalize()
         XCTAssertEqual(invalid.duration, 0.25); XCTAssertEqual(invalid.offset, 0); XCTAssertEqual(invalid.volume, 0.7)
+    }
+
+    func testEdgeTrimmingRespectsSpeedSourceAndOppositeBoundary() throws {
+        let main = TimelineTrimSpan(offset: 2, sourceStart: 1, sourceEnd: 7, sourceDuration: 10, speed: 2)
+        let cutStart = try XCTUnwrap(main.adjusted(edge: .start, delta: 1, kind: .video, timelineDuration: 8))
+        XCTAssertEqual(cutStart.sourceStart, 3); XCTAssertEqual(cutStart.sourceEnd, 7)
+        XCTAssertEqual(cutStart.offset, 2, "Main clips ripple rather than leaving a gap")
+        XCTAssertEqual(cutStart.duration, 2)
+        let extended = try XCTUnwrap(main.adjusted(edge: .end, delta: 100, kind: .video, timelineDuration: 8))
+        XCTAssertEqual(extended.sourceEnd, 10, "A handle cannot extend past the original media")
+        let minimum = try XCTUnwrap(main.adjusted(edge: .start, delta: 100, kind: .video, timelineDuration: 8))
+        XCTAssertEqual(minimum.duration, 0.05, accuracy: 0.000001)
+        let track = TimelineTrimSpan(offset: 0.25, sourceStart: 1, sourceEnd: 5, sourceDuration: 8, speed: 2)
+        let trackStart = try XCTUnwrap(track.adjusted(edge: .start, delta: -100, kind: .overlay, timelineDuration: 3))
+        XCTAssertEqual(trackStart.offset, 0); XCTAssertEqual(trackStart.sourceStart, 0.5)
+        XCTAssertEqual(trackStart.sourceEnd, 5)
+        XCTAssertEqual(trackStart.offset + trackStart.duration, track.offset + track.duration)
+        let trackEnd = try XCTUnwrap(track.adjusted(edge: .end, delta: 100, kind: .overlay, timelineDuration: 3))
+        XCTAssertEqual(trackEnd.offset + trackEnd.duration, 3)
+        XCTAssertEqual(trackEnd.sourceStart, 1); XCTAssertEqual(trackEnd.offset, 0.25)
+        XCTAssertNil(main.adjusted(edge: .end, delta: .nan, kind: .video, timelineDuration: 8))
+        var invalid = main; invalid.speed = .infinity
+        XCTAssertNil(invalid.adjusted(edge: .start, delta: 1, kind: .video, timelineDuration: 8))
+    }
+
+    @MainActor func testNativeTrimTargetsStaySeparateAndFollowRotation() throws {
+        var project = StudioProject()
+        let clip = VideoSegment(url: URL(fileURLWithPath: "/main.mov"), start: 0, end: 8)
+        let sound = AudioSegment(url: URL(fileURLWithPath: "/sound.caf"), offset: 1, sourceDuration: 4, trimDuration: 0.05)
+        project.clips = [clip]; project.audio = [sound]
+        let view = TimelineSurface(frame: CGRect(x: 0, y: 0, width: 390, height: 184))
+        view.layoutIfNeeded()
+        view.apply(project: project, selected: clip.id, thumbnails: [:], zoom: 24, playhead: 0, enabled: true)
+        let start = try XCTUnwrap(view.subviews.first { $0.accessibilityIdentifier == "trimAudioStart_" + sound.id.uuidString })
+        let end = try XCTUnwrap(view.subviews.first { $0.accessibilityIdentifier == "trimAudioEnd_" + sound.id.uuidString })
+        XCTAssertLessThanOrEqual(start.frame.maxX, end.frame.minX + 0.001, "Tiny ranges must not have overlapping trim targets")
+        XCTAssertEqual(start.accessibilityValue, "00:00.0"); XCTAssertEqual(end.accessibilityValue, "00:00.1")
+        view.frame.size.width = 382; view.layoutIfNeeded()
+        let videoEnd = try XCTUnwrap(view.subviews.first { $0.accessibilityIdentifier == "trimVideoEnd" })
+        XCTAssertFalse(videoEnd.isHidden, "The 8-second clip's near-edge grip must remain reachable on a 402 pt iPhone")
+        XCTAssertLessThan(videoEnd.frame.midX, view.bounds.width)
+        var commits = 0
+        view.onTrimItem = { id, kind, edge, delta in
+            XCTAssertEqual(id, sound.id); XCTAssertEqual(kind, .audio); XCTAssertEqual(edge, .start)
+            XCTAssertEqual(delta, 0.1); commits += 1
+        }
+        start.accessibilityIncrement(); XCTAssertEqual(commits, 1)
+        view.frame.size.width = 844; view.layoutIfNeeded()
+        let videoStart = try XCTUnwrap(view.subviews.first { $0.accessibilityIdentifier == "trimVideoStart" })
+        XCTAssertEqual(videoStart.frame.midX, 415, accuracy: 0.5)
+        view.apply(project: project, selected: clip.id, thumbnails: [:], zoom: 24, playhead: 0, enabled: false)
+        start.accessibilityIncrement(); XCTAssertEqual(commits, 1, "Disabled handles cannot mutate a rebuilding project")
+        view.cancelInteraction()
+    }
+
+    @MainActor func testMainEdgeTrimRipplesPersistsAndExportsSpeedAdjustedFrames() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = ProjectStore(root: root); try store.prepare()
+        let red = store.mediaDirectory.appendingPathComponent("red.mov")
+        let green = store.mediaDirectory.appendingPathComponent("green.mov")
+        let blue = store.mediaDirectory.appendingPathComponent("blue.mov")
+        let source = store.mediaDirectory.appendingPathComponent("source.mp4")
+        for (url, color) in [(red, UIColor.red), (green, UIColor.green), (blue, UIColor.blue)] {
+            try await TestMedia.video(to: url, color: color, duration: 1)
+        }
+        var seed = StudioProject()
+        seed.clips = [red, green, blue].map { VideoSegment(url: $0, start: 0, end: 1) }
+        let sourceRender = try await MediaComposer.build(seed)
+        try await MediaComposer.export(sourceRender, to: source)
+        var project = StudioProject()
+        let main = VideoSegment(url: source, start: 0, end: 3, speed: 2)
+        let tail = VideoSegment(url: red, start: 0, end: 1)
+        project.clips = [main, tail]
+        let model = EditorModel(project: project, store: store); defer { model.close() }
+        await model.start(); try await waitForPreview(model); model.seek(0.4)
+        model.trimTimelineItem(main.id, kind: .video, edge: .start, delta: 0.5)
+        XCTAssertTrue(model.rendering); XCTAssertFalse(model.playerReady)
+        await model.export()
+        XCTAssertNil(model.exportedURL, "Export must wait for the newly edited preview, including before its rebuild task starts")
+        try await waitForPreview(model)
+        XCTAssertEqual(model.project.clips[0].start, 1); XCTAssertEqual(model.undoStack.count, 1)
+        XCTAssertEqual(model.project.startTime(of: tail.id), 1)
+        model.trimTimelineItem(main.id, kind: .video, edge: .end, delta: -0.25)
+        try await waitForPreview(model)
+        XCTAssertEqual(model.project.clips[0].end, 2.5); XCTAssertEqual(model.undoStack.count, 2)
+        XCTAssertEqual(model.duration, 1.75); XCTAssertEqual(model.playhead, 0.4, accuracy: 0.01)
+        let saved = try XCTUnwrap(store.list().first)
+        XCTAssertEqual(saved.clips, model.project.clips)
+        model.undo(); XCTAssertEqual(model.project.clips[0].end, 3)
+        model.undo(); XCTAssertEqual(model.project.clips[0].start, 0)
+        model.redo(); model.redo(); try await waitForPreview(model)
+        XCTAssertEqual(model.project.startTime(of: tail.id), 0.75)
+        model.trimTimelineItem(main.id, kind: .video, edge: .start, delta: 0)
+        model.trimTimelineItem(main.id, kind: .video, edge: .end, delta: .nan)
+        XCTAssertEqual(model.undoStack.count, 2, "No-op and invalid drags must not pollute history")
+        await model.export()
+        let output = try XCTUnwrap(model.exportedURL, model.progress)
+        let asset = AVURLAsset(url: output)
+        let length = try await asset.load(.duration).seconds
+        XCTAssertEqual(length, 1.75, accuracy: 0.08)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+        for (time, channel) in [(0.1, 1), (0.6, 2), (1.0, 0)] {
+            let (image, _) = try await generator.image(at: MediaComposer.time(time))
+            XCTAssertGreaterThan(pixel(image, x: image.width / 2, y: image.height / 2)[channel], 180)
+        }
+    }
+
+    @MainActor func testSecondaryEdgeTrimKeepsOppositeEdgeAndExportsSelectedMedia() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = ProjectStore(root: root); try store.prepare()
+        let red = store.mediaDirectory.appendingPathComponent("red.mov")
+        let green = store.mediaDirectory.appendingPathComponent("green.mov")
+        let blue = store.mediaDirectory.appendingPathComponent("blue.mov")
+        let source = store.mediaDirectory.appendingPathComponent("overlay.mp4")
+        let tone = store.mediaDirectory.appendingPathComponent("tone.caf")
+        try await TestMedia.video(to: red, color: .red, duration: 3)
+        try await TestMedia.video(to: green, color: .green, duration: 1)
+        try await TestMedia.video(to: blue, color: .blue, duration: 1)
+        try TestMedia.audio(to: tone, duration: 2, silentPrefix: 0.75)
+        var seed = StudioProject()
+        seed.clips = [VideoSegment(url: red, start: 0, end: 1), VideoSegment(url: green, start: 0, end: 1), VideoSegment(url: blue, start: 0, end: 1)]
+        let sourceRender = try await MediaComposer.build(seed)
+        try await MediaComposer.export(sourceRender, to: source)
+        var project = StudioProject(); project.clips = [VideoSegment(url: red, start: 0, end: 3)]
+        let sound = AudioSegment(url: tone, offset: 0.3, sourceDuration: 2, sourceStart: 0.25)
+        let overlay = OverlaySegment(clip: VideoSegment(url: source, start: 0, end: 3, speed: 2), offset: 0.5)
+        project.audio = [sound]; project.overlays = [overlay]
+        let model = EditorModel(project: project, store: store); defer { model.close() }
+        await model.start(); try await waitForPreview(model)
+        model.trimTimelineItem(sound.id, kind: .audio, edge: .start, delta: 0.65)
+        XCTAssertEqual(model.project.audio[0].offset + model.project.audio[0].duration, 2.05, accuracy: 0.000001)
+        model.trimTimelineItem(sound.id, kind: .audio, edge: .end, delta: -0.5)
+        model.trimTimelineItem(overlay.id, kind: .overlay, edge: .start, delta: 0.5)
+        XCTAssertEqual(model.project.overlays[0].offset + model.project.overlays[0].clip.duration, 2)
+        model.trimTimelineItem(overlay.id, kind: .overlay, edge: .end, delta: -0.5)
+        try await waitForPreview(model)
+        XCTAssertEqual(model.undoStack.count, 4)
+        XCTAssertEqual(model.project.audio[0].sourceStart, 0.9, accuracy: 0.000001)
+        XCTAssertEqual(model.project.audio[0].offset, 0.95, accuracy: 0.000001)
+        XCTAssertEqual(model.project.audio[0].duration, 0.6, accuracy: 0.000001)
+        XCTAssertEqual(model.project.overlays[0].clip.start, 1); XCTAssertEqual(model.project.overlays[0].clip.end, 2)
+        let saved = try XCTUnwrap(store.list().first)
+        XCTAssertEqual(saved.audio, model.project.audio); XCTAssertEqual(saved.overlays, model.project.overlays)
+        model.undo(); XCTAssertEqual(model.project.overlays[0].clip.end, 3)
+        model.undo(); XCTAssertEqual(model.project.overlays[0].offset, 0.5)
+        model.redo(); model.redo(); try await waitForPreview(model)
+        await model.export()
+        let output = try XCTUnwrap(model.exportedURL, model.progress)
+        let asset = AVURLAsset(url: output), generator = AVAssetImageGenerator(asset: asset)
+        generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+        for (time, channel) in [(0.6, 0), (1.15, 1), (1.6, 0)] {
+            let (image, _) = try await generator.image(at: MediaComposer.time(time))
+            XCTAssertGreaterThan(pixel(image, x: 120, y: 18)[channel], 180)
+        }
+        let before = try await audioPeak(asset: asset, start: 0.1, length: 0.2)
+        let during = try await audioPeak(asset: asset, start: 1.05, length: 0.2)
+        let after = try await audioPeak(asset: asset, start: 1.8, length: 0.2)
+        XCTAssertLessThan(before, 200); XCTAssertGreaterThan(during, 500); XCTAssertLessThan(after, 200)
     }
 
     @MainActor func testSourceTrimPersistsUndoAndExportsSelectedFramesAndAudio() async throws {
