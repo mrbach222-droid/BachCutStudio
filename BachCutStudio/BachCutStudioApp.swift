@@ -62,14 +62,15 @@ struct EditorScreen: View {
         .sheet(item: $editingTrack) { track in
             if track.kind == .audio, let sound = model.project.audio.first(where: { $0.id == track.id }) {
                 TrackTimingSheet(title: "Nhạc nền", offset: sound.offset, length: sound.duration,
-                                 maxLength: sound.sourceDuration, timelineLength: model.duration, playhead: model.playhead) { start, length in
-                    model.setAudioTiming(sound.id, offset: start, duration: length)
+                                 sourceStart: sound.sourceStart, sourceDuration: sound.sourceDuration,
+                                 timelineLength: model.duration, playhead: model.playhead) { start, source, length in
+                    model.setAudioTiming(sound.id, offset: start, duration: length, sourceStart: source)
                 }
             } else if track.kind == .overlay, let overlay = model.project.overlays.first(where: { $0.id == track.id }) {
                 TrackTimingSheet(title: "Lớp phủ video", offset: overlay.offset, length: overlay.clip.duration,
-                                 maxLength: (overlay.clip.sourceDuration - overlay.clip.start) / overlay.clip.speed,
-                                 timelineLength: model.duration, playhead: model.playhead) { start, length in
-                    model.setOverlayTiming(overlay.id, offset: start, duration: length)
+                                 sourceStart: overlay.clip.start, sourceDuration: overlay.clip.sourceDuration,
+                                 sourceSpeed: overlay.clip.speed, timelineLength: model.duration, playhead: model.playhead) { start, source, length in
+                    model.setOverlayTiming(overlay.id, offset: start, duration: length, sourceStart: source)
                 }
             }
         }
@@ -211,40 +212,63 @@ struct TrackTimingSelection: Identifiable {
 
 struct TrackTimingSheet: View {
     let title: String
-    let maxLength: Double
+    let sourceDuration: Double
+    let sourceSpeed: Double
     let timelineLength: Double
     let playhead: Double
-    let apply: (Double, Double) -> Void
+    let apply: (Double, Double, Double) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var offset: Double
+    @State private var sourceStart: Double
     @State private var length: Double
-    init(title: String, offset: Double, length: Double, maxLength: Double, timelineLength: Double,
-         playhead: Double, apply: @escaping (Double, Double) -> Void) {
+    @State private var detent: PresentationDetent = .large
+    init(title: String, offset: Double, length: Double, sourceStart: Double, sourceDuration: Double,
+         sourceSpeed: Double = 1, timelineLength: Double, playhead: Double, apply: @escaping (Double, Double, Double) -> Void) {
         self.title = title
-        self.maxLength = maxLength
+        self.sourceDuration = sourceDuration
+        self.sourceSpeed = sourceSpeed
         self.timelineLength = timelineLength
         self.playhead = playhead
         self.apply = apply
         let start = min(max(0, offset), max(0, timelineLength - 0.05))
+        let source = min(max(0, sourceStart), max(0, sourceDuration - 0.05 * sourceSpeed))
         _offset = State(initialValue: start)
-        _length = State(initialValue: min(max(0.05, length), max(0.05, min(maxLength, timelineLength - start))))
+        _sourceStart = State(initialValue: source)
+        _length = State(initialValue: min(max(0.05, length), max(0.05, min((sourceDuration - source) / sourceSpeed, timelineLength - start))))
     }
     private var maxOffset: Double { max(0, timelineLength - 0.05) }
-    private var availableLength: Double { max(0.05, min(maxLength, timelineLength - offset)) }
+    private var maxSourceStart: Double { max(0, sourceDuration - 0.05 * sourceSpeed) }
+    private var availableLength: Double { max(0.05, min((sourceDuration - sourceStart) / sourceSpeed, timelineLength - offset)) }
     private func clampLength() { length = min(length, availableLength) }
     var body: some View {
         NavigationStack {
             Form {
-                Section("Bắt đầu · " + formatTime(offset)) {
+                Section("Vị trí trên timeline · " + formatTime(offset)) {
                     Slider(value: $offset, in: 0...max(0.001, maxOffset))
                         .accessibilityIdentifier("trackStart")
                     HStack {
                         Button("−0,1 giây") { offset = max(0, offset - 0.1); clampLength() }
+                            .accessibilityIdentifier("trackBack")
                         Spacer()
                         Button("Tại vạch tua") { offset = min(maxOffset, max(0, playhead)); clampLength() }
+                            .accessibilityIdentifier("trackAtPlayhead")
                         Spacer()
                         Button("+0,1 giây") { offset = min(maxOffset, offset + 0.1); clampLength() }
-                    }.font(.caption)
+                            .accessibilityIdentifier("trackForward")
+                    }.font(.caption).buttonStyle(.borderless)
+                }
+                Section("Bắt đầu trong tệp · " + formatTime(sourceStart)) {
+                    Slider(value: $sourceStart, in: 0...max(0.001, maxSourceStart))
+                        .accessibilityIdentifier("trackSourceStart")
+                    HStack {
+                        Button("−0,1 giây") { sourceStart = max(0, sourceStart - 0.1); clampLength() }
+                            .accessibilityIdentifier("sourceBack")
+                        Spacer()
+                        Text(formatTime(sourceStart)).monospacedDigit().accessibilityIdentifier("sourceStartTime")
+                        Spacer()
+                        Button("+0,1 giây") { sourceStart = min(maxSourceStart, sourceStart + 0.1); clampLength() }
+                            .accessibilityIdentifier("sourceForward")
+                    }.font(.caption).buttonStyle(.borderless)
                 }
                 Section("Độ dài · " + formatTime(length)) {
                     Slider(value: $length, in: 0.05...availableLength)
@@ -254,14 +278,16 @@ struct TrackTimingSheet: View {
                 }
             }
             .onChange(of: offset) { _ in clampLength() }
+            .onChange(of: sourceStart) { _ in clampLength() }
             .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Hủy") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Áp dụng") { apply(offset, length); dismiss() }.accessibilityIdentifier("applyTrackTiming")
+                    Button("Áp dụng") { apply(offset, sourceStart, length); dismiss() }.accessibilityIdentifier("applyTrackTiming")
                 }
             }
-        }.presentationDetents([.medium, .large])
+        }.presentationDetents([.medium, .large], selection: $detent)
     }
 }
 struct TrimSheet: View {

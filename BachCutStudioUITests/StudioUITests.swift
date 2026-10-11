@@ -145,6 +145,43 @@ final class StudioUITests: XCTestCase {
         XCTAssertEqual(overlay.value as? String, movedOverlay)
     }
 
+    func testSourceSelectionUndoAndRelaunch() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--uitesting-reset", "--uitesting-fixture", "--uitesting-multitrack"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 30)); app.staticTexts["Kiểm thử Studio"].tap()
+        waitForReady(app)
+        let audio = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'audioTrack_' ")).firstMatch
+        let overlay = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'overlayTrack_' ")).firstMatch
+        audio.tap()
+        let sourceForward = app.buttons["sourceForward"]
+        XCTAssertTrue(sourceForward.waitForExistence(timeout: 5))
+        for _ in 0..<3 { sourceForward.tap() }
+        XCTAssertEqual(app.staticTexts["sourceStartTime"].label, "00:00.3")
+        app.buttons["sourceBack"].tap(); XCTAssertEqual(app.staticTexts["sourceStartTime"].label, "00:00.2")
+        sourceForward.tap(); XCTAssertEqual(app.staticTexts["sourceStartTime"].label, "00:00.3")
+        app.buttons["trackForward"].tap(); app.buttons["trackForward"].tap()
+        app.buttons["trackBack"].tap(); app.buttons["trackForward"].tap()
+        XCTAssertEqual(app.staticTexts["sourceStartTime"].label, "00:00.3", "Timeline controls must not change the selected source interval")
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); shot.name = "Music source selection"; shot.lifetime = .keepAlways; add(shot)
+        app.buttons["applyTrackTiming"].tap(); waitForReady(app)
+        XCTAssertEqual(audio.value as? String, "00:01.2")
+        app.buttons["undo"].tap(); waitForReady(app)
+        XCTAssertEqual(audio.value as? String, "00:01.0")
+        audio.tap(); XCTAssertEqual(app.staticTexts["sourceStartTime"].label, "00:00.0"); app.buttons["Hủy"].tap()
+        app.buttons["redo"].tap(); waitForReady(app)
+        XCTAssertEqual(audio.value as? String, "00:01.2")
+        audio.tap(); XCTAssertEqual(app.staticTexts["sourceStartTime"].label, "00:00.3"); app.buttons["Hủy"].tap()
+        overlay.tap(); XCTAssertTrue(sourceForward.waitForExistence(timeout: 5))
+        sourceForward.tap(); sourceForward.tap()
+        XCTAssertEqual(app.staticTexts["sourceStartTime"].label, "00:00.2")
+        app.buttons["applyTrackTiming"].tap(); waitForReady(app)
+        app.terminate(); app.launchArguments = ["--uitesting"]; app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 20)); app.staticTexts["Kiểm thử Studio"].tap(); waitForReady(app)
+        audio.tap(); XCTAssertEqual(app.staticTexts["sourceStartTime"].label, "00:00.3"); app.buttons["Hủy"].tap()
+        overlay.tap(); XCTAssertEqual(app.staticTexts["sourceStartTime"].label, "00:00.2"); app.buttons["Hủy"].tap()
+    }
+
     func waitForReady(_ app: XCUIApplication) {
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["playPause"])
         let result = XCTWaiter.wait(for: [ready], timeout: 20)

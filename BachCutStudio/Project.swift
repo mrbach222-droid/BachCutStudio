@@ -39,7 +39,34 @@ struct AudioSegment: Identifiable, Codable, Equatable {
     var volume: Double = 0.7
     // nil means the entire original audio file, preserving older saved projects.
     var trimDuration: Double? = nil
-    var duration: Double { max(0, min(sourceDuration, trimDuration ?? sourceDuration)) }
+    var sourceStart: Double = 0
+    var duration: Double {
+        let available = max(0, sourceDuration - sourceStart)
+        return max(0, min(available, trimDuration ?? available))
+    }
+    enum CodingKeys: String, CodingKey { case id, url, offset, sourceDuration, volume, trimDuration, sourceStart }
+    init(id: UUID = UUID(), url: URL, offset: Double = 0, sourceDuration: Double, volume: Double = 0.7,
+         trimDuration: Double? = nil, sourceStart: Double = 0) {
+        self.id = id; self.url = url; self.offset = offset; self.sourceDuration = sourceDuration
+        self.volume = volume; self.trimDuration = trimDuration; self.sourceStart = sourceStart
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id); url = try c.decode(URL.self, forKey: .url)
+        offset = try c.decodeIfPresent(Double.self, forKey: .offset) ?? 0
+        sourceDuration = try c.decode(Double.self, forKey: .sourceDuration)
+        volume = try c.decodeIfPresent(Double.self, forKey: .volume) ?? 0.7
+        trimDuration = try c.decodeIfPresent(Double.self, forKey: .trimDuration)
+        sourceStart = try c.decodeIfPresent(Double.self, forKey: .sourceStart) ?? 0
+        normalize()
+    }
+    mutating func normalize() {
+        sourceDuration = sourceDuration.isFinite ? max(0, sourceDuration) : 0
+        sourceStart = sourceStart.isFinite ? min(sourceDuration, max(0, sourceStart)) : 0
+        offset = offset.isFinite ? max(0, offset) : 0
+        volume = volume.isFinite ? min(1, max(0, volume)) : 0.7
+        if let length = trimDuration { trimDuration = length.isFinite ? min(max(0, length), max(0, sourceDuration - sourceStart)) : nil }
+    }
 }
 struct OverlaySegment: Identifiable, Codable, Equatable {
     var id = UUID()

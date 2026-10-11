@@ -566,6 +566,70 @@ final class StudioTests: XCTestCase {
         XCTAssertGreaterThan(duringAudio, 500)
         XCTAssertLessThan(afterAudio, 200)
     }
+    func testAudioSourceTrimDecodesOlderProjectsAndNormalizesBounds() throws {
+        let sound = AudioSegment(url: URL(fileURLWithPath: "/music.caf"), offset: 1, sourceDuration: 4, trimDuration: 1.5)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(sound)) as? [String: Any])
+        legacy.removeValue(forKey: "sourceStart")
+        let decoded = try JSONDecoder().decode(AudioSegment.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertEqual(decoded.sourceStart, 0); XCTAssertEqual(decoded.duration, 1.5)
+        XCTAssertEqual(decoded.id, sound.id); XCTAssertEqual(decoded.offset, 1)
+        var invalid = AudioSegment(url: sound.url, offset: -.infinity, sourceDuration: 4, volume: .nan, trimDuration: 100, sourceStart: 3.75)
+        invalid.normalize()
+        XCTAssertEqual(invalid.duration, 0.25); XCTAssertEqual(invalid.offset, 0); XCTAssertEqual(invalid.volume, 0.7)
+    }
+
+    @MainActor func testSourceTrimPersistsUndoAndExportsSelectedFramesAndAudio() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let red = root.appendingPathComponent("red.mov"), green = root.appendingPathComponent("green.mov"), blue = root.appendingPathComponent("blue.mov")
+        let tone = root.appendingPathComponent("tone.caf"), source = root.appendingPathComponent("overlay.mp4")
+        try await TestMedia.video(to: red, color: .red, duration: 3)
+        try await TestMedia.video(to: green, color: .green, duration: 1)
+        try await TestMedia.video(to: blue, color: .blue, duration: 1)
+        try TestMedia.audio(to: tone, duration: 2, silentPrefix: 0.75)
+        var seed = StudioProject()
+        seed.clips = [VideoSegment(url: red, start: 0, end: 1), VideoSegment(url: green, start: 0, end: 1), VideoSegment(url: blue, start: 0, end: 1)]
+        let sourceRender = try await MediaComposer.build(seed)
+        try await MediaComposer.export(sourceRender, to: source)
+        var project = StudioProject()
+        project.clips = [VideoSegment(url: red, start: 0, end: 3)]
+        let sound = AudioSegment(url: tone, offset: 0.3, sourceDuration: 2)
+        let overlay = OverlaySegment(clip: VideoSegment(url: source, start: 0, end: 3), offset: 0.5)
+        project.audio = [sound]; project.overlays = [overlay]
+        let store = ProjectStore(root: root)
+        let model = EditorModel(project: project, store: store); defer { model.close() }
+        await model.start(); try await waitForPreview(model)
+        model.setAudioTiming(sound.id, offset: 0.3, duration: 0.5, sourceStart: 0.9)
+        try await waitForPreview(model)
+        model.setOverlayTiming(overlay.id, offset: 0.5, duration: 0.5, sourceStart: 1.125)
+        try await waitForPreview(model)
+        let edited = model.project
+        model.undo(); XCTAssertEqual(model.project.overlays[0].clip.start, 0)
+        model.undo(); XCTAssertEqual(model.project.audio[0].sourceStart, 0)
+        model.redo(); model.redo(); try await waitForPreview(model)
+        XCTAssertEqual(model.project.audio[0], edited.audio[0]); XCTAssertEqual(model.project.overlays[0], edited.overlays[0])
+        model.moveAudioTrack(sound.id, to: 0.4); try await waitForPreview(model)
+        XCTAssertEqual(model.project.audio[0].sourceStart, 0.9, "Moving a trimmed track must preserve the selected source interval")
+        let saved = try XCTUnwrap(store.list().first)
+        XCTAssertEqual(saved.audio[0].sourceStart, 0.9); XCTAssertEqual(saved.overlays[0].clip.start, 1.125)
+        let undoCount = model.undoStack.count
+        model.setAudioTiming(sound.id, offset: 1, duration: 1, sourceStart: .nan)
+        XCTAssertEqual(model.undoStack.count, undoCount)
+        await model.export()
+        let output = try XCTUnwrap(model.exportedURL, model.progress)
+        let asset = AVURLAsset(url: output), generator = AVAssetImageGenerator(asset: AVURLAsset(url: output))
+        generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+        let (before, _) = try await generator.image(at: MediaComposer.time(0.3))
+        let (during, _) = try await generator.image(at: MediaComposer.time(0.65))
+        let (after, _) = try await generator.image(at: MediaComposer.time(1.1))
+        XCTAssertGreaterThan(pixel(before, x: 120, y: 18)[0], 180)
+        XCTAssertGreaterThan(pixel(during, x: 120, y: 18)[1], 180, "Export must use the selected middle green section, not the red source beginning")
+        XCTAssertGreaterThan(pixel(after, x: 120, y: 18)[0], 180)
+        let beforeAudio = try await audioPeak(asset: asset, start: 0.1, length: 0.15)
+        let selectedAudio = try await audioPeak(asset: asset, start: 0.45, length: 0.2)
+        let afterAudio = try await audioPeak(asset: asset, start: 1.2, length: 0.15)
+        XCTAssertLessThan(beforeAudio, 200); XCTAssertGreaterThan(selectedAudio, 500); XCTAssertLessThan(afterAudio, 200)
+    }
+
     @MainActor func testFractionalTrackMovesKeepPreviewAndExportPlayable() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let red = root.appendingPathComponent("red.mov"), green = root.appendingPathComponent("green.mov"), tone = root.appendingPathComponent("tone.caf")

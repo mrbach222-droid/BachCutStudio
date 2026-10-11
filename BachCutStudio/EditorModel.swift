@@ -234,14 +234,16 @@ import Photos
     // Commit drag/slider edits once (on Apply), preserving one clean undo step.
     // Offsets are relative to the project's playhead and trimmed lengths never
     // exceed the underlying media or the available base-video timeline.
-    func setAudioTiming(_ id: UUID, offset: Double, duration: Double) {
-        guard offset.isFinite, duration.isFinite else { return }
+    func setAudioTiming(_ id: UUID, offset: Double, duration: Double, sourceStart: Double? = nil) {
+        guard offset.isFinite, duration.isFinite, sourceStart?.isFinite ?? true else { return }
         edit { project in
             guard let index = project.audio.firstIndex(where: { $0.id == id }), project.duration >= 0.05 else { return }
             let start = min(max(0, offset), max(0, project.duration - 0.05))
-            let available = min(project.audio[index].sourceDuration, project.duration - start)
+            let source = min(max(0, sourceStart ?? project.audio[index].sourceStart), max(0, project.audio[index].sourceDuration - 0.05))
+            let available = min(project.audio[index].sourceDuration - source, project.duration - start)
             guard available >= 0.05 else { return }
             project.audio[index].offset = start
+            project.audio[index].sourceStart = source
             project.audio[index].trimDuration = min(available, max(0.05, duration))
         }
     }
@@ -253,12 +255,13 @@ import Photos
         guard let overlay = project.overlays.first(where: { $0.id == id }) else { return }
         setOverlayTiming(id, offset: offset, duration: overlay.clip.duration)
     }
-    func setOverlayTiming(_ id: UUID, offset: Double, duration: Double) {
-        guard offset.isFinite, duration.isFinite else { return }
+    func setOverlayTiming(_ id: UUID, offset: Double, duration: Double, sourceStart: Double? = nil) {
+        guard offset.isFinite, duration.isFinite, sourceStart?.isFinite ?? true else { return }
         edit { project in
             guard let index = project.overlays.firstIndex(where: { $0.id == id }), project.duration >= 0.05 else { return }
             let start = min(max(0, offset), max(0, project.duration - 0.05))
             var clip = project.overlays[index].clip
+            clip.start = min(max(0, sourceStart ?? clip.start), max(0, clip.sourceDuration - 0.05 * clip.speed))
             let available = min((clip.sourceDuration - clip.start) / clip.speed, project.duration - start)
             guard available >= 0.05 else { return }
             clip.end = min(clip.sourceDuration, clip.start + min(available, max(0.05, duration)) * clip.speed)
