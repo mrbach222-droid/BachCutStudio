@@ -315,6 +315,39 @@ final class StudioTests: XCTestCase {
         XCTAssertGreaterThan(reopened.playhead, 0.1)
         XCTAssertTrue(surface.videoLayer.isReadyForDisplay)
     }
+    func testHEVCCodecSelectionAndPlayableExport() async throws {
+        XCTAssertEqual(ExportOptions().codec, .h264, "H.264 stays the default for compatibility")
+        XCTAssertEqual(VideoCodec.hevc.avCodec, .hevc)
+        XCTAssertThrowsError(try ExportOptions(format: .gif, codec: .hevc, resolution: 480, fps: 10).validate(duration: 2))
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("input.mov")
+        try await TestMedia.video(to: source, color: .blue, duration: 0.5)
+        var project = StudioProject()
+        project.ratio = .square
+        project.clips = [VideoSegment(url: source, start: 0, end: 0.5)]
+        let options = ExportOptions(format: .mp4, codec: .hevc, resolution: 480, fps: 24, bitrateMbps: 5)
+        let rendered = try await MediaComposer.build(project, options: options)
+        let url = root.appendingPathComponent("hevc.mp4")
+        let probe = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        guard probe.canApply(outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.hevc,
+            AVVideoWidthKey: 480,
+            AVVideoHeightKey: 480,
+            AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 5_000_000]
+        ], forMediaType: .video) else {
+            throw XCTSkip("Simulator does not expose an HEVC encoder; verify on a physical iPhone")
+        }
+        try await ConfiguredExporter.export(rendered, options: options, to: url)
+        let asset = AVURLAsset(url: url)
+        let track = try XCTUnwrap(try await asset.loadTracks(withMediaType: .video).first)
+        let descriptions = try await track.load(.formatDescriptions)
+        XCTAssertEqual(CMFormatDescriptionGetMediaSubType(descriptions[0]), kCMVideoCodecType_HEVC)
+        XCTAssertEqual(Double(try await track.load(.nominalFrameRate)), 24, accuracy: 0.1)
+        XCTAssertEqual(try await asset.load(.duration).seconds, 0.5, accuracy: 0.08)
+        let generator = AVAssetImageGenerator(asset: asset)
+        let (image, _) = try await generator.image(at: MediaComposer.time(0.25))
+        XCTAssertGreaterThan(pixel(image, x: image.width / 2, y: image.height / 2)[2], 170)
+    }
     func testConfiguredMovieContainersResolutionFPSAndMixedAudio() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let red = root.appendingPathComponent("red.mov"), blue = root.appendingPathComponent("blue.mov"), tone = root.appendingPathComponent("tone.caf")
