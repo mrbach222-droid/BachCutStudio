@@ -89,8 +89,23 @@ final class AudioEnvelopeTests: XCTestCase {
         try await ConfiguredExporter.export(configured, options: options, to: output, progress: { _ in })
         let simpleRMS = try await rms(AVURLAsset(url: simple), windows: windows)
         let outputRMS = try await rms(AVURLAsset(url: output), windows: windows)
-        for levels in [preview, simpleRMS, outputRMS] {
-            XCTAssertGreaterThan(levels[1], 0.045); XCTAssertLessThan(levels[1], 0.095, "0.5 gain must reach decoded audio")
+        // Compare gain against unity through the same channel-layout conversion.
+        // Mono downmix of a stereo AAC export can add sqrt(2) to measured RMS.
+        var referenceProject = p
+        referenceProject.audio[0].volume = 1
+        referenceProject.audio[0].fadeIn = 0; referenceProject.audio[0].fadeOut = 0
+        let referenceRendered = try await MediaComposer.build(referenceProject)
+        let referencePreview = try await rms(referenceRendered.composition, mix: referenceRendered.audio, windows: windows)
+        let referenceSimple = root.appendingPathComponent("unity-preview.mp4")
+        try await MediaComposer.export(referenceRendered, to: referenceSimple)
+        let referenceConfigured = try await MediaComposer.build(referenceProject, options: options)
+        let referenceOutput = root.appendingPathComponent("unity-configured.mp4")
+        try await ConfiguredExporter.export(referenceConfigured, options: options, to: referenceOutput)
+        let referenceSimpleRMS = try await rms(AVURLAsset(url: referenceSimple), windows: windows)
+        let referenceOutputRMS = try await rms(AVURLAsset(url: referenceOutput), windows: windows)
+        for (levels, reference) in zip([preview, simpleRMS, outputRMS], [referencePreview, referenceSimpleRMS, referenceOutputRMS]) {
+            XCTAssertGreaterThan(reference[1], 0.1, "Unity reference must contain the selected non-silent source")
+            XCTAssertEqual(levels[1] / reference[1], 0.5, accuracy: 0.03, "Gain must halve actual samples through the same preview/export path")
             XCTAssertLessThan(levels[0], levels[1] * 0.3, "Fade-in must affect actual samples after the selected source start")
             XCTAssertLessThan(levels[2], levels[1] * 0.3, "Fade-out must end at the trimmed interval, including timeline offset")
         }
