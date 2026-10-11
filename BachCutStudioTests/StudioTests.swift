@@ -339,11 +339,14 @@ final class StudioTests: XCTestCase {
         }
         try await ConfiguredExporter.export(rendered, options: options, to: url)
         let asset = AVURLAsset(url: url)
-        let track = try XCTUnwrap(try await asset.loadTracks(withMediaType: .video).first)
+        let videoTracks = try await asset.loadTracks(withMediaType: .video)
+        let track = try XCTUnwrap(videoTracks.first)
         let descriptions = try await track.load(.formatDescriptions)
         XCTAssertEqual(CMFormatDescriptionGetMediaSubType(descriptions[0]), kCMVideoCodecType_HEVC)
-        XCTAssertEqual(Double(try await track.load(.nominalFrameRate)), 24, accuracy: 0.1)
-        XCTAssertEqual(try await asset.load(.duration).seconds, 0.5, accuracy: 0.08)
+        let frameRate = try await track.load(.nominalFrameRate)
+        let duration = try await asset.load(.duration).seconds
+        XCTAssertEqual(Double(frameRate), 24, accuracy: 0.1)
+        XCTAssertEqual(duration, 0.5, accuracy: 0.08)
         let generator = AVAssetImageGenerator(asset: asset)
         let (image, _) = try await generator.image(at: MediaComposer.time(0.25))
         XCTAssertGreaterThan(pixel(image, x: image.width / 2, y: image.height / 2)[2], 170)
