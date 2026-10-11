@@ -13,6 +13,8 @@ struct EditorScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var importing = false
     @State private var importKind: EditorModel.ImportKind = .video
+    @State private var insertAtPlayhead = false
+    @State private var pendingImportTime: Double?
     @State private var zoom = 24.0
     @State private var showTrim = false
     @State private var showExport = false
@@ -57,7 +59,9 @@ struct EditorScreen: View {
         .onChange(of: phase) { if $0 != .active { model.saveProject(); model.pause() } }
         .fileImporter(isPresented: $importing, allowedContentTypes: importKind == .audio ? [.audio] : [.movie, .video], allowsMultipleSelection: true) { result in
             switch result {
-            case .success(let urls): Task { for url in urls { await model.add(url: url, kind: importKind) } }
+            case .success(let urls):
+                let kind = importKind, time = pendingImportTime
+                Task { await model.add(urls: urls, kind: kind, insertionTime: time) }
             case .failure(let error): model.progress = error.localizedDescription
             }
         }
@@ -115,17 +119,35 @@ struct EditorScreen: View {
     var controls: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                LibraryVideoButton(model: model)
-                Button { importKind = .video; importing = true } label: { Label("Tệp", systemImage: "folder") }
-                Button { importKind = .overlay; importing = true } label: { Label("Lớp phủ", systemImage: "square.on.square") }.disabled(model.clips.isEmpty)
-                Button { importKind = .audio; importing = true } label: { Label("Nhạc", systemImage: "music.note") }.disabled(model.clips.isEmpty)
+                LibraryVideoButton(model: model, insertAtPlayhead: insertAtPlayhead)
+                Button { beginVideoFileImport() } label: { Label("Tệp", systemImage: "folder") }
+                Button { model.pause(); importKind = .overlay; pendingImportTime = model.playhead; importing = true } label: { Label("Lớp phủ", systemImage: "square.on.square") }.disabled(model.clips.isEmpty)
+                Button { model.pause(); importKind = .audio; pendingImportTime = model.playhead; importing = true } label: { Label("Nhạc", systemImage: "music.note") }.disabled(model.clips.isEmpty)
             }.font(.caption.bold()).buttonStyle(.bordered).disabled(model.busy)
         }.padding(.vertical, 5)
+    }
+    func beginVideoFileImport() {
+        model.pause(); importKind = .video; pendingImportTime = insertAtPlayhead ? model.playhead : nil
+        #if DEBUG
+        // Deterministic native UI import uses real files through the production importer.
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-insert") {
+            let urls = ["insert-blue.mov", "insert-green.mov"].map { model.store.mediaDirectory.appendingPathComponent($0) }
+            let time = pendingImportTime
+            Task { await model.add(urls: urls, insertionTime: time) }
+            return
+        }
+        #endif
+        importing = true
     }
     var timeline: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("TIMELINE").font(.caption.bold()).foregroundStyle(.gray)
+                Menu {
+                    Button("Nối cuối video") { insertAtPlayhead = false }.accessibilityIdentifier("importAtEnd")
+                    Button("Chèn tại vạch tua") { model.pause(); insertAtPlayhead = true }.accessibilityIdentifier("importAtPlayhead")
+                } label: { Label(insertAtPlayhead ? "Chèn tại vạch" : "Nối cuối", systemImage: insertAtPlayhead ? "arrow.down.to.line" : "plus.rectangle.on.rectangle") }
+                .accessibilityIdentifier("importPlacement")
                 Spacer(); Image(systemName: "minus.magnifyingglass")
                 Slider(value: $zoom, in: 8...80).frame(width: 110).accessibilityIdentifier("timelineZoom")
                 Image(systemName: "plus.magnifyingglass")
