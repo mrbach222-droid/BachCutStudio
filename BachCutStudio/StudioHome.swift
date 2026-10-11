@@ -75,7 +75,7 @@ struct StudioHome: View {
                             Button(role: .destructive) { pendingDelete = project } label: { Image(systemName: "trash").padding(6) }.accessibilityLabel("Xóa dự án " + project.name)
                         }.padding(14).background(.white.opacity(0.05)).clipShape(RoundedRectangle(cornerRadius: 16))
                     }
-                    Text("Xoay ngang iPhone để mở rộng timeline. Nhấn giữ dòng nhạc hoặc lớp phủ để đổi âm lượng hoặc xóa.").font(.caption).foregroundStyle(.gray)
+                    Text("Xoay ngang iPhone để mở rộng timeline. Kéo trực tiếp khối nhạc hoặc lớp phủ để đổi vị trí; chạm vào khối để chỉnh độ dài.").font(.caption).foregroundStyle(.gray)
                     if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.orange) }
                 }.padding(20)
             }.background(Color(red: 0.045, green: 0.055, blue: 0.08).ignoresSafeArea()).foregroundStyle(.white)
