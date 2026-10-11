@@ -221,6 +221,7 @@ struct TrackTimingSheet: View {
     @State private var offset: Double
     @State private var sourceStart: Double
     @State private var length: Double
+    @State private var detent: PresentationDetent = .large
     init(title: String, offset: Double, length: Double, sourceStart: Double, sourceDuration: Double,
          sourceSpeed: Double = 1, timelineLength: Double, playhead: Double, apply: @escaping (Double, Double, Double) -> Void) {
         self.title = title
@@ -279,13 +280,14 @@ struct TrackTimingSheet: View {
             .onChange(of: offset) { _ in clampLength() }
             .onChange(of: sourceStart) { _ in clampLength() }
             .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Hủy") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Áp dụng") { apply(offset, sourceStart, length); dismiss() }.accessibilityIdentifier("applyTrackTiming")
                 }
             }
-        }.presentationDetents([.medium, .large])
+        }.presentationDetents([.medium, .large], selection: $detent)
     }
 }
 struct TrimSheet: View {
