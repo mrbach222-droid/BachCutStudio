@@ -351,6 +351,53 @@ final class StudioTests: XCTestCase {
         let (image, _) = try await generator.image(at: MediaComposer.time(0.25))
         XCTAssertGreaterThan(pixel(image, x: image.width / 2, y: image.height / 2)[2], 170)
     }
+    @MainActor func testAudioAndOverlayTimelineEditingPersistsAndChangesExport() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let red = root.appendingPathComponent("red.mov")
+        let blue = root.appendingPathComponent("blue.mov")
+        let tone = root.appendingPathComponent("tone.caf")
+        try await TestMedia.video(to: red, color: .red, duration: 3)
+        try await TestMedia.video(to: blue, color: .blue, duration: 2)
+        try TestMedia.audio(to: tone, duration: 3)
+        var project = StudioProject()
+        project.clips = [VideoSegment(url: red, start: 0, end: 3)]
+        let audio = AudioSegment(url: tone, sourceDuration: 3)
+        let overlay = OverlaySegment(clip: VideoSegment(url: blue, start: 0, end: 2))
+        project.audio = [audio]; project.overlays = [overlay]
+        let store = ProjectStore(root: root)
+        let model = EditorModel(project: project, store: store)
+        defer { model.close() }
+        model.setAudioTiming(audio.id, offset: 0.6, duration: 0.7)
+        model.setOverlayTiming(overlay.id, offset: 1.2, duration: 0.5)
+        XCTAssertEqual(model.project.audio[0].offset, 0.6, accuracy: 0.001)
+        XCTAssertEqual(model.project.audio[0].duration, 0.7, accuracy: 0.001)
+        XCTAssertEqual(model.project.overlays[0].offset, 1.2, accuracy: 0.001)
+        XCTAssertEqual(model.project.overlays[0].clip.duration, 0.5, accuracy: 0.001)
+        let saved = try XCTUnwrap(store.list().first)
+        XCTAssertEqual(saved.audio[0].duration, 0.7, accuracy: 0.001)
+        XCTAssertEqual(saved.overlays[0].offset, 1.2, accuracy: 0.001)
+        model.undo()
+        XCTAssertEqual(model.project.overlays[0].clip.duration, 2, accuracy: 0.001)
+        model.redo()
+        XCTAssertEqual(model.project.overlays[0].clip.duration, 0.5, accuracy: 0.001)
+        let rendered = try await MediaComposer.build(model.project)
+        let output = root.appendingPathComponent("repositioned.mp4")
+        try await MediaComposer.export(rendered, to: output)
+        let asset = AVURLAsset(url: output)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        let (before, _) = try await generator.image(at: MediaComposer.time(0.3))
+        let (during, _) = try await generator.image(at: MediaComposer.time(1.4))
+        XCTAssertGreaterThan(pixel(before, x: 120, y: 18)[0], 180)
+        XCTAssertGreaterThan(pixel(during, x: 120, y: 18)[2], 150)
+        let beforeAudio = try await audioPeak(asset: asset, start: 0.05, length: 0.2)
+        let duringAudio = try await audioPeak(asset: asset, start: 0.65, length: 0.2)
+        let afterAudio = try await audioPeak(asset: asset, start: 1.5, length: 0.2)
+        XCTAssertLessThan(beforeAudio, 200)
+        XCTAssertGreaterThan(duringAudio, 500)
+        XCTAssertLessThan(afterAudio, 200)
+    }
     func testConfiguredMovieContainersResolutionFPSAndMixedAudio() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let red = root.appendingPathComponent("red.mov"), blue = root.appendingPathComponent("blue.mov"), tone = root.appendingPathComponent("tone.caf")
