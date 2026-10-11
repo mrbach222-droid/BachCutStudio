@@ -195,6 +195,14 @@ final class StudioTests: XCTestCase {
         let reusedSecond = try XCTUnwrap((model.player?.currentItem?.asset as? AVURLAsset)?.url)
         XCTAssertEqual(reusedSecond, secondURL, "Redo must reuse its earlier composited preview")
         XCTAssertGreaterThanOrEqual(model.previewReuseCount, 2)
+        // Cancel many queued rebuilds before they get a main-actor turn.
+        // Only the final state may change the current player's readiness.
+        for _ in 0..<25 { model.undo(); model.redo() }
+        try await waitForPreview(model)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertTrue(model.playerReady, model.debugInfo)
+        XCTAssertFalse(model.rendering)
+        XCTAssertEqual((model.player?.currentItem?.asset as? AVURLAsset)?.url, secondURL)
         model.close()
         XCTAssertFalse(FileManager.default.fileExists(atPath: firstURL.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: secondURL.path))

@@ -130,7 +130,7 @@ final class StudioUITests: XCTestCase {
         let originalOverlay = overlay.value as? String
         let overlayFrom = overlay.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         overlayFrom.press(forDuration: 0.05, thenDragTo: overlayFrom.withOffset(CGVector(dx: 24, dy: 0)))
-        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
+        waitForReady(app)
         let movedOverlay = overlay.value as? String
         XCTAssertNotEqual(movedOverlay, originalOverlay, "Dragging the overlay block must commit its offset")
         XCTAssertEqual(time.label, positionBeforeDrag)
@@ -143,6 +143,19 @@ final class StudioUITests: XCTestCase {
         expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: app.buttons["playPause"]); waitForExpectations(timeout: 20)
         XCTAssertEqual(audio.value as? String, movedAudio)
         XCTAssertEqual(overlay.value as? String, movedOverlay)
+    }
+
+    func waitForReady(_ app: XCUIApplication) {
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["playPause"])
+        let result = XCTWaiter.wait(for: [ready], timeout: 20)
+        if result != .completed {
+            let state = app.staticTexts["playerDebug"]
+            let status = app.staticTexts["statusMessage"]
+            let detail = (state.exists ? state.label : "No player diagnostics") + " | " + (status.exists ? status.label : "No status message")
+            let snapshot = XCTAttachment(string: app.debugDescription); snapshot.name = "Multi-track failure hierarchy"; snapshot.lifetime = .keepAlways; add(snapshot)
+            print("MULTITRACK_FAILURE " + detail)
+            XCTAssertEqual(result, .completed, detail)
+        }
     }
 
     func rotateAndSettle(_ app: XCUIApplication, landscape: Bool) {

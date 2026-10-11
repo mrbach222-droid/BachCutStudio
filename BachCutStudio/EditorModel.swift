@@ -152,7 +152,13 @@ import Photos
         playhead = min(playhead, duration); exportedURL = nil
         saveProject(); revision += 1
         rebuildTask?.cancel()
-        rebuildTask = Task { await refreshPreview(); await loadThumbnails() }
+        let requestedRevision = revision
+        rebuildTask = Task {
+            guard !Task.isCancelled, requestedRevision == revision else { return }
+            await refreshPreview()
+            guard !Task.isCancelled, requestedRevision == revision else { return }
+            await loadThumbnails()
+        }
     }
     func undo() { guard !busy, let prior = undoStack.popLast() else { return }; redoStack.append(project); project = prior; finishEdit() }
     func redo() { guard !busy, let next = redoStack.popLast() else { return }; undoStack.append(project); project = next; finishEdit() }
@@ -293,6 +299,9 @@ import Photos
     }
     func pause() { recordEvent("pause"); playbackRevision += 1; player?.pause(); playing = false }
     func refreshPreview() async {
+        // A canceled task can begin executing after a newer rebuild has already
+        // completed. It must not clear that player's ready/rendering state.
+        guard !Task.isCancelled else { return }
         recordEvent("rebuild")
         let token = revision, snapshot = project
         let oldTime = playhead, oldSeek = seekRevision, shouldResume = playing, oldPlayback = playbackRevision
