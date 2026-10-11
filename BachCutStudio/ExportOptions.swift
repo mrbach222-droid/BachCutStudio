@@ -5,8 +5,14 @@ enum ExportFormat: String, CaseIterable { case mp4 = "MP4", mov = "MOV", gif = "
     var fileExtension: String { rawValue.lowercased() }
     var fileType: AVFileType { self == .mov ? .mov : .mp4 }
 }
+enum VideoCodec: String, CaseIterable {
+    case h264 = "H.264"
+    case hevc = "H.265 / HEVC"
+    var avCodec: AVVideoCodecType { self == .hevc ? .hevc : .h264 }
+}
 struct ExportOptions: Equatable {
     var format: ExportFormat = .mp4
+    var codec: VideoCodec = .h264
     var resolution = 1080
     var fps = 30
     var bitrateMbps = 10
@@ -16,6 +22,7 @@ struct ExportOptions: Equatable {
     func validate(duration: Double) throws {
         guard duration.isFinite, duration > 0 else { throw StudioError.message("Dự án không có video") }
         if format == .gif {
+            guard codec == .h264 else { throw StudioError.message("GIF không hỗ trợ mã hóa H.265; hãy chọn H.264.") }
             guard [240, 360, 480].contains(resolution), [5, 10].contains(fps), duration <= 30.001 else {
                 throw StudioError.message("GIF hỗ trợ tối đa 30 giây, 480p và 10 fps. Hãy cắt ngắn dự án hoặc chọn video.")
             }
@@ -45,6 +52,13 @@ struct ExportSheet: View {
                     Picker("Định dạng", selection: $options.format) { ForEach(ExportFormat.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
                         .pickerStyle(.segmented).accessibilityIdentifier("exportFormat")
                 }.disabled(model.busy)
+                if options.format != .gif {
+                    Section("Chuẩn nén video") {
+                        Picker("Bộ mã hóa", selection: $options.codec) {
+                            ForEach(VideoCodec.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        }.accessibilityIdentifier("exportCodec")
+                    }.disabled(model.busy)
+                }
                 Section("Chất lượng") {
                     Picker("Độ phân giải", selection: $options.resolution) {
                         ForEach(options.format == .gif ? [240, 360, 480] : ExportOptions.resolutions, id: \.self) { Text($0 == 2160 ? "4K · 2160p" : $0 == 1440 ? "2K · 1440p" : "\($0)p").tag($0) }
@@ -61,7 +75,10 @@ struct ExportSheet: View {
                     if options.format == .gif {
                         Text("GIF lặp liên tục, không có âm thanh; tối đa 30 giây, 480p và 10 fps.").font(.caption)
                     } else {
-                        Text("Video H.264 · Âm thanh AAC\nDung lượng ước tính: \(options.estimatedBytes(duration: model.duration) / 1_000_000, specifier: "%.1f") MB; thực tế thay đổi theo nội dung.").font(.caption)
+                        Text("Video \(options.codec.rawValue) · Âm thanh AAC\nDung lượng ước tính: \(options.estimatedBytes(duration: model.duration) / 1_000_000, specifier: "%.1f") MB; thực tế thay đổi theo nội dung.").font(.caption)
+                        if options.codec == .hevc {
+                            Text("HEVC tiết kiệm dung lượng ở chất lượng tương đương khi chọn tốc độ bit thấp hơn H.264. Thiết bị không hỗ trợ mã hóa HEVC sẽ báo lỗi để bạn chọn lại H.264.").font(.caption)
+                        }
                     }
                 }
                 if started {
@@ -84,6 +101,7 @@ struct ExportSheet: View {
             .onChange(of: options.format) { format in
                 options.resolution = format == .gif ? 480 : 1080
                 options.fps = format == .gif ? 10 : 30
+                if format == .gif { options.codec = .h264 }
             }
             .onChange(of: model.exportedURL) { if started && $0 != nil { dismiss() } }
         }.interactiveDismissDisabled(model.busy).tint(.cyan)
