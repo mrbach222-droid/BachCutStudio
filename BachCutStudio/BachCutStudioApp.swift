@@ -132,8 +132,8 @@ struct EditorScreen: View {
                              tapTrack: { id, isOverlay in
                                  editingTrack = TrackTimingSelection(id: id, kind: isOverlay ? .overlay : .audio)
                              },
+                             beginTrackDrag: { model.pause() },
                              moveTrack: { id, isOverlay, offset in
-                                 model.pause()
                                  if isOverlay { model.moveOverlayTrack(id, to: offset) }
                                  else { model.moveAudioTrack(id, to: offset) }
                              })
