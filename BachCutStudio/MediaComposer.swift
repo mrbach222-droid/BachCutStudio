@@ -77,9 +77,10 @@ enum MediaComposer {
                 canvas = canvasSize(ratio: project.ratio, natural: size, transform: transform)
                 if let options { canvas = try options.canvas(aspect: Double(canvas.width / canvas.height)) }
             }
-            let sourceRange = CMTimeRange(start: time(clip.start), duration: time(clip.end - clip.start))
-            try base.insertTimeRange(sourceRange, of: source, at: time(cursor))
-            base.scaleTimeRange(CMTimeRange(start: time(cursor), duration: sourceRange.duration), toDuration: time(clip.duration))
+            let sourceRange = CMTimeRange(start: time(clip.start), end: time(clip.end))
+            let destinationRange = CMTimeRange(start: time(cursor), end: time(cursor + clip.duration))
+            try base.insertTimeRange(sourceRange, of: source, at: destinationRange.start)
+            base.scaleTimeRange(CMTimeRange(start: destinationRange.start, duration: sourceRange.duration), toDuration: destinationRange.duration)
             if let sound = try await asset.loadTracks(withMediaType: .audio).first {
                 // Use the intersection: some video containers have a shorter audio track.
                 let intersection = CMTimeRangeGetIntersection(sourceRange, otherRange: try await sound.load(.timeRange))
@@ -96,7 +97,7 @@ enum MediaComposer {
             needsVideoComposition = needsVideoComposition || fitted != .identity || size != canvas
             layer.setTransform(fitted, at: time(cursor))
             let instruction = AVMutableVideoCompositionInstruction()
-            instruction.timeRange = CMTimeRange(start: time(cursor), duration: time(clip.duration))
+            instruction.timeRange = destinationRange
             instruction.backgroundColor = nil // AVFoundation defaults to opaque black; avoid grayscale CGColor in the live compositor.
             instruction.layerInstructions = [layer]
             instructions.append(instruction)
@@ -107,7 +108,7 @@ enum MediaComposer {
             mixes.removeAll()
         }
         // V2 picture-in-picture is an actual second video track, included in preview and export.
-        var overlayLayers: [(Double, Double, AVMutableVideoCompositionLayerInstruction)] = []
+        var overlayLayers: [(CMTimeRange, AVMutableVideoCompositionLayerInstruction)] = []
         for overlay in project.overlays where overlay.offset < project.duration {
             let clip = overlay.clip
             let asset = AVURLAsset(url: clip.url)
@@ -115,24 +116,28 @@ enum MediaComposer {
                   let track = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else { throw StudioError.message("Không đọc được lớp phủ") }
             let start = max(0, overlay.offset), length = min(clip.duration, project.duration - start)
             guard length > 0 else { continue }
-            let sourceRange = CMTimeRange(start: time(clip.start), duration: time(length * clip.speed))
-            try track.insertTimeRange(sourceRange, of: source, at: time(start))
-            track.scaleTimeRange(CMTimeRange(start: time(start), duration: sourceRange.duration), toDuration: time(length))
+            let destinationRange = CMTimeRange(start: time(start), end: time(start + length))
+            let sourceRange = CMTimeRange(start: time(clip.start), end: time(clip.start + destinationRange.duration.seconds * clip.speed))
+            try track.insertTimeRange(sourceRange, of: source, at: destinationRange.start)
+            track.scaleTimeRange(CMTimeRange(start: destinationRange.start, duration: sourceRange.duration), toDuration: destinationRange.duration)
             let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
             let box = CGRect(x: canvas.width * 0.60, y: canvas.height * 0.06, width: canvas.width * 0.34, height: canvas.height * 0.34)
             layer.setTransform(fittedTransform(size: try await source.load(.naturalSize), transform: try await source.load(.preferredTransform), canvas: canvas, inset: box), at: time(start))
-            overlayLayers.append((start, start + length, layer))
+            overlayLayers.append((destinationRange, layer))
         }
         // Split instructions at all overlay boundaries. No inactive track is requested by the compositor.
-        let boundaries = Set(instructions.flatMap { [$0.timeRange.start.seconds, $0.timeRange.end.seconds] } + overlayLayers.flatMap { [$0.0, $0.1] }).sorted()
+        // Use the same integer media ticks as the inserted tracks. Independently
+        // rounding a floating-point start and duration can leave a one-tick gap
+        // or request an overlay beyond its actual range after a touch drag.
+        let boundaries = Set(instructions.flatMap { [$0.timeRange.start.value, $0.timeRange.end.value] } + overlayLayers.flatMap { [$0.0.start.value, $0.0.end.value] }).sorted()
         var finalInstructions: [AVMutableVideoCompositionInstruction] = []
-        for (start, end) in zip(boundaries, boundaries.dropFirst()) where end - start > 0.0001 {
-            let mid = (start + end) / 2
-            guard let baseInstruction = instructions.first(where: { $0.timeRange.start.seconds <= mid && $0.timeRange.end.seconds > mid }) else { continue }
+        for (start, end) in zip(boundaries, boundaries.dropFirst()) where end > start {
+            let mid = CMTime(value: start + (end - start) / 2, timescale: 600)
+            guard let baseInstruction = instructions.first(where: { CMTimeRangeContainsTime($0.timeRange, time: mid) }) else { continue }
             let instruction = AVMutableVideoCompositionInstruction()
-            instruction.timeRange = CMTimeRange(start: time(start), duration: time(end - start))
+            instruction.timeRange = CMTimeRange(start: CMTime(value: start, timescale: 600), end: CMTime(value: end, timescale: 600))
             instruction.backgroundColor = nil // AVFoundation defaults to opaque black; avoid grayscale CGColor in the live compositor.
-            instruction.layerInstructions = overlayLayers.filter { $0.0 <= mid && $0.1 > mid }.reversed().map { $0.2 } + baseInstruction.layerInstructions
+            instruction.layerInstructions = overlayLayers.filter { CMTimeRangeContainsTime($0.0, time: mid) }.reversed().map { $0.1 } + baseInstruction.layerInstructions
             finalInstructions.append(instruction)
         }
         for sound in project.audio where sound.offset < project.duration {
@@ -165,6 +170,9 @@ enum MediaComposer {
         }
         guard session.status == .completed else {
             try? FileManager.default.removeItem(at: url)
+            #if DEBUG
+            print("COMPOSITION_EXPORT_FAILURE \(String(describing: session.error as NSError?))")
+            #endif
             throw session.error ?? StudioError.message("Xuất video thất bại")
         }
     }

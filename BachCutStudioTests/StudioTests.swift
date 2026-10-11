@@ -566,6 +566,55 @@ final class StudioTests: XCTestCase {
         XCTAssertGreaterThan(duringAudio, 500)
         XCTAssertLessThan(afterAudio, 200)
     }
+    @MainActor func testFractionalTrackMovesKeepPreviewAndExportPlayable() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let red = root.appendingPathComponent("red.mov"), green = root.appendingPathComponent("green.mov"), tone = root.appendingPathComponent("tone.caf")
+        try await TestMedia.video(to: red, color: .red, duration: 8)
+        try await TestMedia.video(to: green, color: .green, duration: 2)
+        try TestMedia.audio(to: tone, duration: 4)
+        var project = StudioProject()
+        project.clips = [VideoSegment(url: red, start: 0, end: 8)]
+        let overlay = OverlaySegment(clip: VideoSegment(url: green, start: 0, end: 2), offset: 2)
+        let sound = AudioSegment(url: tone, offset: 1, sourceDuration: 4)
+        project.overlays = [overlay]; project.audio = [sound]
+        let model = EditorModel(project: project, store: ProjectStore(root: root)); defer { model.close() }
+        await model.start(); try await waitForPreview(model)
+        model.moveAudioTrack(sound.id, to: 0.4166666666666667)
+        try await waitForPreview(model)
+        model.undo(); model.redo(); try await waitForPreview(model)
+        // Touch gestures produce fractional times, including positions between
+        // both source frames and the composition's 1/600-second ticks.
+        for offset in [2.5833333333333335, 2.671113764, 2.000444444] {
+            model.moveOverlayTrack(overlay.id, to: offset)
+            try await waitForPreview(model)
+            XCTAssertTrue(model.playerReady, model.debugInfo + " | " + model.progress)
+        }
+        await model.export()
+        let output = try XCTUnwrap(model.exportedURL, model.progress)
+        let asset = AVURLAsset(url: output)
+        let outputDuration = try await asset.load(.duration).seconds
+        XCTAssertEqual(outputDuration, 8, accuracy: 0.08)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+        let (before, _) = try await generator.image(at: MediaComposer.time(1.5))
+        let (during, _) = try await generator.image(at: MediaComposer.time(2.5))
+        let (after, _) = try await generator.image(at: MediaComposer.time(4.5))
+        XCTAssertGreaterThan(pixel(before, x: 120, y: 18)[0], 180)
+        XCTAssertGreaterThan(pixel(during, x: 120, y: 18)[1], 180)
+        XCTAssertGreaterThan(pixel(after, x: 120, y: 18)[0], 180)
+        let peak = try await audioPeak(asset: asset, start: 1, length: 0.2)
+        XCTAssertGreaterThan(peak, 500)
+
+        // A clip cut and an overlay can quantize to the same tick. The
+        // resulting composition must remain valid and export actual frames.
+        var split = model.project
+        split.clips = [VideoSegment(url: red, start: 0, end: 2.000333333), VideoSegment(url: red, start: 2.000333333, end: 8)]
+        let rendered = try await MediaComposer.build(split)
+        let valid = try await rendered.video.isValid(for: rendered.composition, timeRange: CMTimeRange(start: .zero, duration: rendered.composition.duration), validationDelegate: nil)
+        XCTAssertTrue(valid)
+        try await MediaComposer.export(rendered, to: root.appendingPathComponent("split.mp4"))
+    }
+
     func testConfiguredMovieContainersResolutionFPSAndMixedAudio() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let red = root.appendingPathComponent("red.mov"), blue = root.appendingPathComponent("blue.mov"), tone = root.appendingPathComponent("tone.caf")
