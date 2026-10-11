@@ -137,10 +137,12 @@ struct EditorScreen: View {
                              moveTrack: { id, isOverlay, offset in
                                  if isOverlay { model.moveOverlayTrack(id, to: offset) }
                                  else { model.moveAudioTrack(id, to: offset) }
+                             }, trimItem: { id, kind, edge, delta in
+                                 model.trimTimelineItem(id, kind: kind, edge: edge, delta: delta)
                              })
-                .frame(height: CGFloat(128 + (model.project.overlays.count + model.project.audio.count) * 32))
+                .frame(height: CGFloat(140 + (model.project.overlays.count + model.project.audio.count) * 44))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-            Text("Kéo tua · 2 ngón zoom · Nhấn giữ đổi clip · Kéo khối nhạc/lớp phủ để di chuyển").font(.caption2).foregroundStyle(.secondary)
+            Text("Kéo tua · 2 ngón zoom · Nhấn giữ đổi clip · Kéo hai đầu để cắt · Kéo giữa khối nhạc/lớp phủ để di chuyển").font(.caption2).foregroundStyle(.secondary)
             if !model.project.audio.isEmpty || !model.project.overlays.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {

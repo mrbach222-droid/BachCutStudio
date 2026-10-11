@@ -28,6 +28,7 @@ struct CenteredTimeline: UIViewRepresentable {
     let tapTrack: (UUID, Bool) -> Void
     let beginTrackDrag: () -> Void
     let moveTrack: (UUID, Bool, Double) -> Void
+    let trimItem: (UUID, TimelineItemKind, TimelineTrimEdge, Double) -> Void
 
     func makeUIView(context: Context) -> TimelineSurface { TimelineSurface() }
     func updateUIView(_ view: TimelineSurface, context: Context) {
@@ -35,6 +36,7 @@ struct CenteredTimeline: UIViewRepresentable {
         view.onEndScrub = endScrub; view.onZoomChange = changeZoom
         view.onBeginMove = beginMove; view.onMove = move
         view.onTapTrack = tapTrack; view.onBeginTrackDrag = beginTrackDrag; view.onMoveTrack = moveTrack
+        view.onTrimItem = trimItem
         view.apply(project: project, selected: selected, thumbnails: thumbnails, zoom: zoom, playhead: playhead, enabled: enabled)
     }
     static func dismantleUIView(_ view: TimelineSurface, coordinator: ()) { view.cancelInteraction() }
@@ -51,6 +53,20 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     private var trackHandles: [UUID: TimelineTrackHandle] = [:]
     private var draggingTrack: UUID?
     private var trackDragStart = 0.0
+    private struct TrimKey: Hashable { let id: UUID; let kind: TimelineItemKind; let edge: TimelineTrimEdge }
+    private struct TrimItem {
+        let id: UUID; let kind: TimelineItemKind; let span: TimelineTrimSpan
+        let y: CGFloat; let height: CGFloat; let color: UIColor; let label: String
+    }
+    private struct TrimSession {
+        let key: TrimKey; let original: TimelineTrimSpan; let timelineDuration: Double
+        var current: TimelineTrimSpan; var delta: Double
+    }
+    private var trimItems: [TrimItem] = []
+    private var trimHandles: [TrimKey: TimelineTrimHandle] = [:]
+    private var activeTrim: TrimSession?
+    private let trimOutline = UIView()
+    private let trimCaption = UILabel()
     private var selected: UUID?
     private var thumbnails: [UUID: [UIImage]] = [:]
     private var zoom = 24.0
@@ -73,6 +89,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     var onTapTrack: ((UUID, Bool) -> Void)?
     var onBeginTrackDrag: (() -> Void)?
     var onMoveTrack: ((UUID, Bool, Double) -> Void)?
+    var onTrimItem: ((UUID, TimelineItemKind, TimelineTrimEdge, Double) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -96,6 +113,13 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         timeLabel.isUserInteractionEnabled = false
         timeLabel.accessibilityIdentifier = "timelineTimecode"
         addSubview(timeLabel)
+        trimOutline.isUserInteractionEnabled = false; trimOutline.isHidden = true
+        trimOutline.layer.borderWidth = 2; trimOutline.layer.cornerRadius = 4
+        trimCaption.font = .monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
+        trimCaption.textColor = .white; trimCaption.textAlignment = .center
+        trimCaption.backgroundColor = UIColor.black.withAlphaComponent(0.8)
+        trimCaption.clipsToBounds = true
+        trimOutline.addSubview(trimCaption); insertSubview(trimOutline, belowSubview: line)
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(longPress(_:)))
         hold.minimumPressDuration = 0.35; collection.addGestureRecognizer(hold)
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinchZoom(_:)))
@@ -110,6 +134,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         timeLabel.frame = CGRect(x: bounds.midX - 38, y: 0, width: 76, height: 22)
         updateTimecode()
         if lastWidth != bounds.width {
+            cancelTrim()
             lastWidth = bounds.width
             synchronizing = true
             collection.contentInset = UIEdgeInsets(top: 0, left: bounds.width / 2, bottom: 0, right: bounds.width / 2)
@@ -119,6 +144,10 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         updateMarks()
     }
     func apply(project: StudioProject, selected: UUID?, thumbnails: [UUID: [UIImage]], zoom: Double, playhead: Double, enabled: Bool) {
+        if let session = activeTrim,
+           !enabled || self.zoom != zoom || project.duration != session.timelineDuration ||
+           project.trimSpan(id: session.key.id, kind: session.key.kind) != session.original ||
+           (session.key.kind == .video && selected != session.key.id) { cancelTrim() }
         let changed = clips != project.clips || self.zoom != zoom
         self.selected = selected; self.thumbnails = thumbnails; self.zoom = zoom
         duration = project.duration; time = playhead
@@ -127,6 +156,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
             + project.audio.map { TimelineTrack(id: $0.id, isOverlay: false, label: "A2 · Nhạc", start: $0.offset, duration: min($0.duration, max(0, duration - $0.offset)), color: .systemGreen) }
         canvas.tracks = tracks
         configureTrackHandles(enabled: enabled)
+        configureTrimHandles(project: project, enabled: enabled)
         collection.isUserInteractionEnabled = enabled
         if changed && !moving {
             clips = project.clips
@@ -194,13 +224,14 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
             trackHandles[id]?.configure(label: track.label, color: track.color, enabled: enabled)
         }
         updateTrackFrames()
+        updateTrimFrames()
     }
     private func updateTrackFrames() {
         for (index, track) in tracks.enumerated() {
             guard let id = track.id, id != draggingTrack, let handle = trackHandles[id] else { continue }
             handle.frame = CGRect(x: -collection.contentOffset.x + CGFloat(track.start * zoom),
-                                  y: CGFloat(96 + index * 32),
-                                  width: CGFloat(max(1, track.duration * zoom)), height: 26)
+                                  y: CGFloat(96 + index * 44),
+                                  width: CGFloat(max(1, track.duration * zoom)), height: 40)
             handle.accessibilityValue = formatTime(track.start)
         }
     }
@@ -213,7 +244,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
               let track = tracks.first(where: { $0.id == handle.trackID }) else { return }
         switch gesture.state {
         case .began:
-            guard !moving, !pinching, !userScrolling else { return }
+            guard !moving, !pinching, !userScrolling, activeTrim == nil else { return }
             draggingTrack = handle.trackID
             trackDragStart = track.start
             onBeginTrackDrag?()
@@ -243,6 +274,126 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     private func updateMarks() {
         canvas.origin = -collection.contentOffset.x; canvas.zoom = zoom; canvas.duration = duration; canvas.setNeedsDisplay()
         updateTrackFrames()
+        updateTrimFrames()
+    }
+    private func configureTrimHandles(project: StudioProject, enabled: Bool) {
+        trimItems = []
+        if let selected, let span = project.trimSpan(id: selected, kind: .video) {
+            trimItems.append(TrimItem(id: selected, kind: .video, span: span, y: 28, height: 60, color: .cyan, label: "Video"))
+        }
+        for (index, track) in tracks.enumerated() {
+            guard let id = track.id else { continue }
+            let kind: TimelineItemKind = track.isOverlay ? .overlay : .audio
+            guard let span = project.trimSpan(id: id, kind: kind) else { continue }
+            trimItems.append(TrimItem(id: id, kind: kind, span: span, y: CGFloat(96 + index * 44), height: 40,
+                                      color: track.color, label: track.isOverlay ? "Lớp phủ" : "Nhạc"))
+        }
+        trimItems.removeAll { $0.span.adjusted(edge: .end, delta: 0, kind: $0.kind, timelineDuration: duration) == nil }
+        let keys = Set(trimItems.flatMap { item in
+            [TrimKey(id: item.id, kind: item.kind, edge: .start), TrimKey(id: item.id, kind: item.kind, edge: .end)]
+        })
+        for key in Array(trimHandles.keys) where !keys.contains(key) {
+            trimHandles.removeValue(forKey: key)?.removeFromSuperview()
+        }
+        for item in trimItems {
+            for edge in [TimelineTrimEdge.start, .end] {
+                let key = TrimKey(id: item.id, kind: item.kind, edge: edge)
+                if trimHandles[key] == nil {
+                    let handle = TimelineTrimHandle(id: item.id, kind: item.kind, edge: edge)
+                    handle.adjust = { [weak self] delta in
+                        guard let self, self.activeTrim == nil else { return }
+                        self.onTrimItem?(key.id, key.kind, key.edge, delta)
+                    }
+                    let pan = UIPanGestureRecognizer(target: self, action: #selector(dragTrimHandle(_:)))
+                    pan.maximumNumberOfTouches = 1; handle.addGestureRecognizer(pan)
+                    insertSubview(handle, belowSubview: line); trimHandles[key] = handle
+                }
+                trimHandles[key]?.configure(label: item.label, color: item.color, enabled: enabled)
+            }
+        }
+        insertSubview(trimOutline, belowSubview: line)
+        for handle in trimHandles.values { insertSubview(handle, belowSubview: line) }
+        updateTrimFrames()
+    }
+    private func updateTrimFrames() {
+        for item in trimItems {
+            let session = activeTrim.flatMap { $0.key.id == item.id && $0.key.kind == item.kind ? $0 : nil }
+            let span = session?.current ?? item.span
+            // While dragging a main in-point, show the removed region. On release
+            // the new main range ripples back against the preceding clip.
+            let ripplePreview = item.kind == .video && session?.key.edge == .start
+                ? (span.sourceStart - item.span.sourceStart) / span.speed : 0
+            let x = -collection.contentOffset.x + CGFloat((span.offset + ripplePreview) * zoom)
+            let width = CGFloat(span.duration * zoom)
+            let leftCenter = min(max(6, x - 7), max(6, bounds.width - 6))
+            let rightCenter = min(max(6, x + width + 7), max(6, bounds.width - 6))
+            let hitWidth = x >= 0 && x + width <= bounds.width
+                ? min(44, max(1, rightCenter - leftCenter)) : 44
+            for edge in [TimelineTrimEdge.start, .end] {
+                let key = TrimKey(id: item.id, kind: item.kind, edge: edge)
+                guard let handle = trimHandles[key] else { continue }
+                let boundary = edge == .start ? x : x + width
+                let center = edge == .start ? leftCenter : rightCenter
+                // Short ranges have disjoint hit regions, rather than one edge
+                // stealing the other's touches. Wider ranges get a 44 pt target.
+                handle.frame = CGRect(x: center - hitWidth / 2, y: item.y, width: hitWidth, height: item.height)
+                handle.isHidden = boundary < 0 || boundary > bounds.width
+                handle.accessibilityValue = formatTime(edge == .start ? span.sourceStart : span.sourceEnd)
+            }
+            if session != nil {
+                trimOutline.frame = CGRect(x: x, y: item.y, width: max(1, width), height: item.height)
+                trimOutline.layer.borderColor = item.color.cgColor
+                trimCaption.frame = CGRect(x: 2, y: max(2, item.height - 19), width: max(0, width - 4), height: 17)
+                trimCaption.text = formatTime(span.duration)
+                trimOutline.isHidden = false
+            }
+        }
+    }
+    @objc private func dragTrimHandle(_ gesture: UIPanGestureRecognizer) {
+        guard let handle = gesture.view as? TimelineTrimHandle else { return }
+        let key = TrimKey(id: handle.itemID, kind: handle.kind, edge: handle.edge)
+        switch gesture.state {
+        case .began:
+            guard !moving, !pinching, !userScrolling, draggingTrack == nil, activeTrim == nil,
+                  let item = trimItems.first(where: { $0.id == key.id && $0.kind == key.kind }) else { return }
+            activeTrim = TrimSession(key: key, original: item.span, timelineDuration: duration, current: item.span, delta: 0)
+            onBeginTrackDrag?(); setTrimmedItemAlpha(0.45)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            updateTrimPreview(gesture)
+        case .changed:
+            guard activeTrim?.key == key else { return }
+            updateTrimPreview(gesture)
+        case .ended:
+            guard activeTrim?.key == key else { return }
+            updateTrimPreview(gesture)
+            guard let session = activeTrim else { return }
+            cancelTrim()
+            if session.current != session.original {
+                UISelectionFeedbackGenerator().selectionChanged()
+                onTrimItem?(key.id, key.kind, key.edge, session.delta)
+            }
+        case .cancelled, .failed:
+            if activeTrim?.key == key { cancelTrim() }
+        default: break
+        }
+    }
+    private func updateTrimPreview(_ gesture: UIPanGestureRecognizer) {
+        guard var session = activeTrim else { return }
+        let delta = Double(gesture.translation(in: self).x) / zoom
+        guard let span = session.original.adjusted(edge: session.key.edge, delta: delta,
+            kind: session.key.kind, timelineDuration: session.timelineDuration) else { return }
+        session.current = span; session.delta = delta; activeTrim = session
+        updateTrimFrames()
+    }
+    private func setTrimmedItemAlpha(_ alpha: CGFloat) {
+        guard let session = activeTrim else { return }
+        if session.key.kind == .video, let index = clips.firstIndex(where: { $0.id == session.key.id }) {
+            collection.cellForItem(at: IndexPath(item: index, section: 0))?.alpha = alpha
+        } else { trackHandles[session.key.id]?.alpha = alpha }
+    }
+    private func cancelTrim() {
+        setTrimmedItemAlpha(1); activeTrim = nil; trimOutline.isHidden = true
+        updateTrimFrames()
     }
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { clips.count }
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
@@ -268,7 +419,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     @objc private func pinchZoom(_ gesture: UIPinchGestureRecognizer) {
         switch gesture.state {
         case .began:
-            guard !moving else { return }
+            guard !moving, activeTrim == nil, draggingTrack == nil else { return }
             pinching = true; pinchStartZoom = zoom
             if !userScrolling { onBeginScrub?() }
         case .changed:
@@ -292,7 +443,8 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         let location = gesture.location(in: collection)
         switch gesture.state {
         case .began:
-            guard let index = collection.indexPathForItem(at: location), clips.count > 1 else { return }
+            guard activeTrim == nil, draggingTrack == nil,
+                  let index = collection.indexPathForItem(at: location), clips.count > 1 else { return }
             onBeginMove?(clips[index.item].id)
             moving = collection.beginInteractiveMovementForItem(at: index)
             if moving { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
@@ -305,6 +457,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         }
     }
     func cancelInteraction() {
+        cancelTrim()
         if moving { collection.cancelInteractiveMovement(); moving = false }
         if pinching { pinching = false; onEndScrub?(time) }
         if userScrolling { finishScrub() }
@@ -405,7 +558,7 @@ private final class TimelineMarks: UIView {
         for (index, track) in tracks.enumerated() {
             // Interactive audio and overlay blocks are native pan-enabled views above this canvas.
             guard track.id == nil else { continue }
-            let box = CGRect(x: origin + track.start * zoom, y: Double(96 + index * 32), width: track.duration * zoom, height: 26)
+            let box = CGRect(x: origin + track.start * zoom, y: Double(96 + index * 44), width: track.duration * zoom, height: 40)
             let visible = box.intersection(bounds)
             guard !visible.isNull else { continue }
             track.color.withAlphaComponent(0.25).setFill(); UIRectFill(visible)
@@ -442,4 +595,37 @@ private final class TimelineTrackHandle: UIView {
         isUserInteractionEnabled = enabled
         accessibilityLabel = label
     }
+}
+
+private final class TimelineTrimHandle: UIView {
+    let itemID: UUID
+    let kind: TimelineItemKind
+    let edge: TimelineTrimEdge
+    var adjust: ((Double) -> Void)?
+    private let grip = UIView()
+    private let mark = UIView()
+    init(id: UUID, kind: TimelineItemKind, edge: TimelineTrimEdge) {
+        itemID = id; self.kind = kind; self.edge = edge
+        super.init(frame: .zero)
+        grip.layer.cornerRadius = 4; grip.isUserInteractionEnabled = false
+        mark.backgroundColor = .white; mark.layer.cornerRadius = 1
+        grip.addSubview(mark); addSubview(grip)
+        isAccessibilityElement = true; accessibilityTraits = [.adjustable]
+        let type = kind == .video ? "Video" : kind == .audio ? "Audio" : "Overlay"
+        accessibilityIdentifier = "trim" + type + (edge == .start ? "Start" : "End") + (kind == .video ? "" : "_" + id.uuidString)
+        accessibilityHint = "Kéo ngang để cắt. Vuốt lên hoặc xuống để chỉnh 0,1 giây."
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        grip.frame = CGRect(x: bounds.midX - 6, y: 2, width: 12, height: max(0, bounds.height - 4))
+        mark.frame = CGRect(x: 5, y: max(4, grip.bounds.midY - 8), width: 2, height: 16)
+    }
+    func configure(label: String, color: UIColor, enabled: Bool) {
+        grip.backgroundColor = color; isUserInteractionEnabled = enabled
+        accessibilityTraits = enabled ? [.adjustable] : [.adjustable, .notEnabled]
+        accessibilityLabel = (edge == .start ? "Cắt đầu " : "Cắt cuối ") + label.lowercased()
+    }
+    override func accessibilityIncrement() { if isUserInteractionEnabled { adjust?(0.1) } }
+    override func accessibilityDecrement() { if isUserInteractionEnabled { adjust?(-0.1) } }
 }
