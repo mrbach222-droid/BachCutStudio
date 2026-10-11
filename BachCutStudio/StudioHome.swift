@@ -94,6 +94,14 @@ struct StudioHome: View {
                             let media = store.mediaDirectory.appendingPathComponent("fixture.mov")
                             try await TestMedia.video(to: media, color: .red, duration: 8)
                             var p = StudioProject(); p.name = "Kiểm thử Studio"; p.clips = [VideoSegment(url: media, start: 0, end: 8)]
+                            if ProcessInfo.processInfo.arguments.contains("--uitesting-multitrack") {
+                                let overlay = store.mediaDirectory.appendingPathComponent("overlay.mov")
+                                let sound = store.mediaDirectory.appendingPathComponent("music.caf")
+                                try await TestMedia.video(to: overlay, color: .green, duration: 2)
+                                try TestMedia.audio(to: sound, duration: 4)
+                                p.overlays = [OverlaySegment(clip: VideoSegment(url: overlay, start: 0, end: 2), offset: 2)]
+                                p.audio = [AudioSegment(url: sound, offset: 1, sourceDuration: 4)]
+                            }
                             try store.save(p)
                         }
                         #endif
