@@ -128,10 +128,18 @@ struct EditorScreen: View {
             CenteredTimeline(project: model.project, selected: model.selected, thumbnails: model.thumbnails, zoom: zoom, playhead: model.playhead,
                              enabled: !model.busy && !model.rendering, select: model.select, beginScrub: model.beginScrub,
                              scrub: model.seek, endScrub: model.endScrub, changeZoom: { zoom = $0 },
-                             beginMove: { id in model.pause(); model.selected = id }, move: model.moveClip)
+                             beginMove: { id in model.pause(); model.selected = id }, move: model.moveClip,
+                             tapTrack: { id, isOverlay in
+                                 editingTrack = TrackTimingSelection(id: id, kind: isOverlay ? .overlay : .audio)
+                             },
+                             moveTrack: { id, isOverlay, offset in
+                                 model.pause()
+                                 if isOverlay { model.moveOverlayTrack(id, to: offset) }
+                                 else { model.moveAudioTrack(id, to: offset) }
+                             })
                 .frame(height: CGFloat(128 + (model.project.overlays.count + model.project.audio.count) * 32))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-            Text("Kéo để tua · Chụm 2 ngón để zoom · Nhấn giữ để đổi thứ tự").font(.caption2).foregroundStyle(.secondary)
+            Text("Kéo tua · 2 ngón zoom · Nhấn giữ đổi clip · Kéo khối nhạc/lớp phủ để di chuyển").font(.caption2).foregroundStyle(.secondary)
             if !model.project.audio.isEmpty || !model.project.overlays.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
