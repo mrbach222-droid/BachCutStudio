@@ -1,6 +1,6 @@
 # BáchCut Studio
 
-Native SwiftUI / AVFoundation iPhone video editor. Current release candidate: **0.10.0**, iOS 16+.
+Native SwiftUI / AVFoundation iPhone video editor. Current release candidate: **0.11.0**, iOS 16+.
 
 - Separate saved projects with autosave, migration from the 0.3 project, portable media paths, undo / redo.
 - Native UICollectionView timeline with a fixed central playhead, precise center timecode, magnetic cut-boundary snapping, native two-finger pinch zoom that keeps the playhead stationary, drag-to-scrub, coalesced seeks, inertial scrolling, long-press interactive clip reorder with edge scrolling, trim, split, duplicate, speed and source volume. Up to 20 sampled frames per clip show the scene progression; frames are cached until that clip's source, trim or speed changes. Cells are reused and only visible ruler/track marks are drawn.

@@ -170,6 +170,14 @@ import Photos
             project.audio[index].trimDuration = min(available, max(0.05, duration))
         }
     }
+    func moveAudioTrack(_ id: UUID, to offset: Double) {
+        guard let audio = project.audio.first(where: { $0.id == id }) else { return }
+        setAudioTiming(id, offset: offset, duration: audio.duration)
+    }
+    func moveOverlayTrack(_ id: UUID, to offset: Double) {
+        guard let overlay = project.overlays.first(where: { $0.id == id }) else { return }
+        setOverlayTiming(id, offset: offset, duration: overlay.clip.duration)
+    }
     func setOverlayTiming(_ id: UUID, offset: Double, duration: Double) {
         guard offset.isFinite, duration.isFinite else { return }
         edit { project in
