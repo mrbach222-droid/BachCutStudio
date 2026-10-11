@@ -37,9 +37,23 @@ final class ConfiguredExporter: @unchecked Sendable {
         let (reader, video) = try reader()
         let writer = try AVAssetWriter(outputURL: url, fileType: options.format.fileType)
         writer.shouldOptimizeForNetworkUse = true
-        let settings: [String: Any] = [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: Int(rendered.video.renderSize.width), AVVideoHeightKey: Int(rendered.video.renderSize.height),
-            AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: options.bitrateMbps * 1_000_000, AVVideoExpectedSourceFrameRateKey: options.fps, AVVideoMaxKeyFrameIntervalKey: options.fps * 2, AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel]]
-        guard writer.canApply(outputSettings: settings, forMediaType: .video) else { throw StudioError.message("Thiết bị không hỗ trợ chất lượng đã chọn. Hãy giảm độ phân giải hoặc fps.") }
+        var compression: [String: Any] = [
+            AVVideoAverageBitRateKey: options.bitrateMbps * 1_000_000,
+            AVVideoExpectedSourceFrameRateKey: options.fps,
+            AVVideoMaxKeyFrameIntervalKey: options.fps * 2
+        ]
+        // The H.264 profile constant is not valid for HEVC. Let the hardware choose
+        // an HEVC profile appropriate to the render size and selected frame rate.
+        if options.codec == .h264 { compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel }
+        let settings: [String: Any] = [
+            AVVideoCodecKey: options.codec.avCodec,
+            AVVideoWidthKey: Int(rendered.video.renderSize.width),
+            AVVideoHeightKey: Int(rendered.video.renderSize.height),
+            AVVideoCompressionPropertiesKey: compression
+        ]
+        guard writer.canApply(outputSettings: settings, forMediaType: .video) else {
+            throw StudioError.message("Thiết bị không hỗ trợ mã hóa \(options.codec.rawValue) ở chất lượng đã chọn. Hãy giảm độ phân giải/fps hoặc chọn H.264.")
+        }
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: settings); videoInput.expectsMediaDataInRealTime = false
         guard writer.canAdd(videoInput) else { throw StudioError.message("Không tạo được kênh xuất video") }; writer.add(videoInput)
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: videoInput, sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA, kCVPixelBufferWidthKey as String: Int(rendered.video.renderSize.width), kCVPixelBufferHeightKey as String: Int(rendered.video.renderSize.height)])
