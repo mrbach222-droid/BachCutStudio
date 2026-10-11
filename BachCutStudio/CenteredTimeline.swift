@@ -387,8 +387,8 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         session.current = span; session.delta = delta; activeTrim = session
         updateTrimFrames()
     }
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return super.gestureRecognizerShouldBegin(gestureRecognizer) }
         let velocity = pan.velocity(in: self)
         // Leave vertical movement to the enclosing editor scroll view.
         return abs(velocity.x) > abs(velocity.y) && activeTrim == nil && draggingTrack == nil && !moving && !pinching && !userScrolling
