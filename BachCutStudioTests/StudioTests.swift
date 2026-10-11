@@ -328,7 +328,7 @@ final class StudioTests: XCTestCase {
         let options = ExportOptions(format: .mp4, codec: .hevc, resolution: 480, fps: 24, bitrateMbps: 5)
         let rendered = try await MediaComposer.build(project, options: options)
         let url = root.appendingPathComponent("hevc.mp4")
-        let probe = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        let probe = try AVAssetWriter(outputURL: root.appendingPathComponent("probe.mp4"), fileType: .mp4)
         guard probe.canApply(outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: 480,
