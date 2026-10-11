@@ -146,7 +146,7 @@ struct EditorScreen: View {
                              })
                 .frame(height: CGFloat(140 + (model.project.overlays.count + model.project.audio.count) * 44))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-            Text("Kéo tua · 2 ngón zoom · Nhấn giữ đổi clip · Kéo hai đầu để cắt · Kéo giữa khối nhạc/lớp phủ để di chuyển").font(.caption2).foregroundStyle(.secondary)
+            Text("Kéo tua · 2 ngón zoom · Nhấn giữ → kéo ô nhỏ → thả để chèn · Kéo hai đầu để cắt · Kéo giữa khối nhạc/lớp phủ để di chuyển").font(.caption2).foregroundStyle(.secondary)
             if !model.project.audio.isEmpty || !model.project.overlays.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
