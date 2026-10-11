@@ -50,9 +50,9 @@ jobs:
           test -s Payload/BachCutStudio.app/BachCutStudio
           test -s Payload/BachCutStudio.app/Assets.car
           /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Payload/BachCutStudio.app/Info.plist
-          zip -qry BachCutStudio_v0.16.0_unsigned.ipa Payload
-          unzip -t BachCutStudio_v0.16.0_unsigned.ipa
-          shasum -a 256 BachCutStudio_v0.16.0_unsigned.ipa > SHA256SUMS.txt
+          zip -qry BachCutStudio_v0.17.0_unsigned.ipa Payload
+          unzip -t BachCutStudio_v0.17.0_unsigned.ipa
+          shasum -a 256 BachCutStudio_v0.17.0_unsigned.ipa > SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -66,22 +66,22 @@ jobs:
           retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
-          name: BachCutStudio-v0.16.0-unsigned-IPA
+          name: BachCutStudio-v0.17.0-unsigned-IPA
           path: |
-            BachCutStudio_v0.16.0_unsigned.ipa
+            BachCutStudio_v0.17.0_unsigned.ipa
             SHA256SUMS.txt
           retention-days: 30
       - name: Publish tested IPA
         if: github.ref == 'refs/heads/main' && success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.16.0
-          name: BáchCut Studio v0.16.0
+          tag_name: v0.17.0
+          name: BáchCut Studio v0.17.0
           prerelease: true
           files: |
-            BachCutStudio_v0.16.0_unsigned.ipa
+            BachCutStudio_v0.17.0_unsigned.ipa
             SHA256SUMS.txt
           body: |
-            Photos and Files import can insert an ordered video selection at the captured playhead, splitting an existing clip as needed in one Undo/Redo action. Near-boundary insertion snaps to avoid tiny fragments. Failed selections leave the project untouched. Music and overlays retain their absolute offsets. Holding a main clip switches to equal-width compact thumbnails with a visible insertion gap. Neighbours move aside; holding near either edge scrolls continuously. Releasing commits one reorder action and restores the time-based timeline without moving the playhead. Timeline filmstrip shows successive source frames. Center timecode, magnetic cut snapping and native pinch-to-zoom with center-anchored playhead improve accurate scrubbing; reorder keeps playhead stationary. Centered playhead, long-press clip reorder, MP4/MOV H.264 or HEVC plus GIF export, editable music/overlay placement and lengths, direct drag of music and overlay tracks, bounded composited preview caching for fast Undo/Redo, source in-point and length selection for music and overlays, native direct edge trimming of main video/music/overlays with one-step Undo/Redo, multi-project autosave, undo/redo, trim/split, PiP, music and Landscape Pro.
+            Music has adjustable gain, fade-in and fade-out, used in both preview and actual video export. Overlapping fades shorten proportionally to fit trimmed playback. Envelope changes save and undo in one action. Photos and Files import can insert an ordered video selection at the captured playhead, splitting an existing clip as needed in one Undo/Redo action. Near-boundary insertion snaps to avoid tiny fragments. Failed selections leave the project untouched. Music and overlays retain their absolute offsets. Holding a main clip switches to equal-width compact thumbnails with a visible insertion gap. Neighbours move aside; holding near either edge scrolls continuously. Releasing commits one reorder action and restores the time-based timeline without moving the playhead. Timeline filmstrip shows successive source frames. Center timecode, magnetic cut snapping and native pinch-to-zoom with center-anchored playhead improve accurate scrubbing; reorder keeps playhead stationary. Centered playhead, long-press clip reorder, MP4/MOV H.264 or HEVC plus GIF export, editable music/overlay placement and lengths, direct drag of music and overlay tracks, bounded composited preview caching for fast Undo/Redo, source in-point and length selection for music and overlays, native direct edge trimming of main video/music/overlays with one-step Undo/Redo, multi-project autosave, undo/redo, trim/split, PiP, music and Landscape Pro.
             Release is produced only after simulator unit/integration/UI tests pass. Unsigned IPA: sign before installation. Physical-device verification is still required before a production release.
           overwrite_files: true

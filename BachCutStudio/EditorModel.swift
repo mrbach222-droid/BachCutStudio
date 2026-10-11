@@ -251,6 +251,17 @@ import Photos
     }
     func removeAudio(_ id: UUID) { edit { $0.audio.removeAll { $0.id == id } } }
     func audioVolume(_ id: UUID, value: Double) { edit { p in if let i = p.audio.firstIndex(where: { $0.id == id }) { p.audio[i].volume = min(1, max(0, value)) } } }
+    func setAudioEnvelope(_ id: UUID, volume: Double, fadeIn: Double, fadeOut: Double) {
+        guard volume.isFinite, fadeIn.isFinite, fadeOut.isFinite else { return }
+        pause()
+        edit { project in
+            guard let index = project.audio.firstIndex(where: { $0.id == id }) else { return }
+            let length = min(project.audio[index].duration, max(0, project.duration - project.audio[index].offset))
+            let fades = AudioEnvelope.bounded(fadeIn: fadeIn, fadeOut: fadeOut, length: length)
+            project.audio[index].volume = min(1, max(0, volume))
+            project.audio[index].fadeIn = fades.fadeIn; project.audio[index].fadeOut = fades.fadeOut
+        }
+    }
     func removeOverlay(_ id: UUID) { edit { $0.overlays.removeAll { $0.id == id } } }
 
     // A native handle drag produces one mutation on release, never one per frame.
@@ -271,6 +282,7 @@ import Photos
                 project.audio[index].offset = next.offset
                 project.audio[index].sourceStart = next.sourceStart
                 project.audio[index].trimDuration = next.duration
+                project.audio[index].normalize()
             case .overlay:
                 guard let index = project.overlays.firstIndex(where: { $0.id == id }) else { return }
                 project.overlays[index].offset = next.offset
@@ -294,6 +306,7 @@ import Photos
             project.audio[index].offset = start
             project.audio[index].sourceStart = source
             project.audio[index].trimDuration = min(available, max(0.05, duration))
+            project.audio[index].normalize()
         }
     }
     func moveAudioTrack(_ id: UUID, to offset: Double) {

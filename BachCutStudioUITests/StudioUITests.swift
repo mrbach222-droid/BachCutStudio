@@ -388,6 +388,35 @@ final class StudioUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 20)); app.staticTexts["Kiểm thử Studio"].tap(); waitForReady(app)
         XCTAssertEqual(app.staticTexts["clipCount"].label, "4 đoạn"); XCTAssertEqual(app.staticTexts["durationTime"].label, "00:12.0")
     }
+    func testAudioEnvelopeApplyCancelUndoAndRelaunch() {
+        let app = XCUIApplication(); app.launchArguments = ["--uitesting", "--uitesting-reset", "--uitesting-fixture", "--uitesting-multitrack"]; app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 30)); app.staticTexts["Kiểm thử Studio"].tap(); waitForReady(app)
+        func openEnvelope() {
+            let menu = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'audioMenu_' ")).firstMatch
+            for _ in 0..<3 where !menu.isHittable { app.swipeUp() }
+            XCTAssertTrue(menu.isHittable)
+            menu.tap(); app.buttons["editAudioEnvelope"].tap()
+            XCTAssertTrue(app.buttons["applyAudioEnvelope"].waitForExistence(timeout: 10))
+        }
+        openEnvelope()
+        app.buttons["fadeInOneSecond"].tap(); app.buttons["fadeOutOneSecond"].tap()
+        XCTAssertEqual(app.staticTexts["audioFadeInTime"].label, "00:01.0")
+        XCTAssertEqual(app.staticTexts["audioFadeOutTime"].label, "00:01.0")
+        let sheet = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); sheet.name = "Native music fade controls"; sheet.lifetime = .keepAlways; add(sheet)
+        app.buttons["applyAudioEnvelope"].tap(); waitForReady(app)
+        XCTAssertTrue(app.buttons["undo"].isEnabled)
+        app.buttons["undo"].tap(); waitForReady(app); XCTAssertFalse(app.buttons["undo"].isEnabled)
+        openEnvelope(); XCTAssertEqual(app.staticTexts["audioFadeInTime"].label, "00:00.0"); app.buttons["Hủy"].tap()
+        app.buttons["redo"].tap(); waitForReady(app)
+        app.terminate(); app.launchArguments = ["--uitesting"]; app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 20)); app.staticTexts["Kiểm thử Studio"].tap(); waitForReady(app)
+        openEnvelope(); XCTAssertEqual(app.staticTexts["audioFadeInTime"].label, "00:01.0"); XCTAssertEqual(app.staticTexts["audioFadeOutTime"].label, "00:01.0")
+        app.buttons["clearAudioFades"].tap(); app.buttons["Hủy"].tap()
+        openEnvelope(); XCTAssertEqual(app.staticTexts["audioFadeInTime"].label, "00:01.0")
+        rotateAndSettle(app, landscape: true, readyButton: "applyAudioEnvelope")
+        let landscape = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); landscape.name = "Native music fades landscape"; landscape.lifetime = .keepAlways; add(landscape)
+        app.buttons["Hủy"].tap(); rotateAndSettle(app, landscape: false)
+    }
     func waitForReady(_ app: XCUIApplication) {
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["playPause"])
         let result = XCTWaiter.wait(for: [ready], timeout: 20)
@@ -401,7 +430,7 @@ final class StudioUITests: XCTestCase {
         }
     }
 
-    func rotateAndSettle(_ app: XCUIApplication, landscape: Bool) {
+    func rotateAndSettle(_ app: XCUIApplication, landscape: Bool, readyButton: String = "exportVideo") {
         XCUIDevice.shared.orientation = landscape ? .landscapeLeft : .portrait
         let window = app.windows.firstMatch
         var previous = CGRect.zero
@@ -411,7 +440,7 @@ final class StudioUITests: XCTestCase {
             let matches = landscape ? frame.width > frame.height : frame.height > frame.width
             stableSamples = matches && frame == previous ? stableSamples + 1 : 0
             if stableSamples >= 5 {
-                XCTAssertTrue(app.buttons["exportVideo"].isHittable, "Export must stay reachable after rotation")
+                XCTAssertTrue(app.buttons[readyButton].isHittable, "The active screen action must stay reachable after rotation")
                 return
             }
             previous = frame
