@@ -1,13 +1,13 @@
 # BáchCut Studio
 
-Native SwiftUI / AVFoundation iPhone video editor. Current release candidate: **0.11.0**, iOS 16+.
+Native SwiftUI / AVFoundation iPhone video editor. Current release candidate: **0.12.0**, iOS 16+.
 
 - Separate saved projects with autosave, migration from the 0.3 project, portable media paths, undo / redo.
 - Native UICollectionView timeline with a fixed central playhead, precise center timecode, magnetic cut-boundary snapping, native two-finger pinch zoom that keeps the playhead stationary, drag-to-scrub, coalesced seeks, inertial scrolling, long-press interactive clip reorder with edge scrolling, trim, split, duplicate, speed and source volume. Up to 20 sampled frames per clip show the scene progression; frames are cached until that clip's source, trim or speed changes. Cells are reused and only visible ruler/track marks are drawn.
-- V2 picture-in-picture video overlays and A2 music at the current playhead. Use their labeled menus below the timeline to remove or adjust music volume.
+- V2 picture-in-picture video overlays and A2 music at the current playhead. Move secondary tracks directly by dragging or use precision start/duration controls. Undo/redo preserves track edits.
 - Original / 9:16 / 16:9 / 1:1 canvas. Mixed-orientation clips use per-clip aspect-fit transforms in both preview and export.
 - Portrait and Landscape Pro without recreating editing state.
-- MP4 / MOV H.264 + AAC export with 480p–4K short-edge resolution, 24/25/30/50/60 fps and 5–100 Mbps target bitrate. AVAssetReader/Writer applies the settings to actual frames and audio. Animated GIF export (240–480p, 5/10 fps, up to 30 seconds), progress, cancellation, Files sharing and Photos saving. No watermark. Upscaling and frame duplication do not create extra source detail; AI UHD, optical flow and HDR conversion are not implemented.
+- MP4 / MOV H.264 + AAC export with 480p–4K short-edge resolution, 24/25/30/50/60 fps and 5–100 Mbps target bitrate. Choose H.264 or H.265/HEVC for MP4/MOV. AVAssetReader/Writer applies selected settings to actual frames and audio. Animated GIF export (240–480p, 5/10 fps, up to 30 seconds), progress, cancellation, Files sharing and Photos saving. No watermark. Upscaling and frame duplication do not create extra source detail; AI UHD, optical flow and HDR conversion are not implemented.
 
 ## Validation
 GitHub Actions generates the Xcode project, runs XCTest model/storage tests, real AVFoundation export tests (frame colors, duration, orientation, audio waveform and overlays), and XCUITest portrait/landscape, playback, undo/redo, export and app relaunch tests. It builds and validates the device IPA only after tests pass. Logs and `.xcresult` are uploaded even on failure. Native-layer regression tests require real displayed frames and advancing player time for imported and restored projects. Original-size clips with identity transforms play directly from the composition. Rotated clips, changed canvas geometry and overlays use a temporary composed MP4 preview for reliable displayed frames; preparing a complex preview takes additional time. Preview files are removed when replaced or the editor closes.
