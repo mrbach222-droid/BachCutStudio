@@ -148,6 +148,31 @@ final class StudioUITests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
     }
 
+    func testShortSelectedClipCanBeHeldThroughOverlappingTrimGrips() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--uitesting-reset", "--uitesting-fixture", "--uitesting-short-reorder"]; app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 30)); app.staticTexts["Kiểm thử Studio"].tap()
+        let play = app.buttons["playPause"]
+        XCTAssertTrue(play.waitForExistence(timeout: 15))
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
+        app.sliders["scrubber"].adjust(toNormalizedSliderPosition: 0.78)
+        let short = app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch
+        let id = short.value as? String; XCTAssertNotNil(id)
+        short.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let time = app.staticTexts["playheadTime"].label
+        let selected = app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch
+        XCTAssertLessThan(selected.frame.width, 20, "The fixture must be shorter than its two overlapping trim grips")
+        let source = selected.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        source.press(forDuration: 0.35, thenDragTo: source.withOffset(CGVector(dx: 88, dy: 40)))
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "clip_2").firstMatch.value as? String, id)
+        XCTAssertEqual(app.staticTexts["durationTime"].label, "00:10.5", "Holding a grip must reorder without trimming the short source")
+        XCTAssertEqual(app.staticTexts["playheadTime"].label, time)
+        app.buttons["undo"].tap()
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch.value as? String, id)
+        XCTAssertFalse(app.buttons["undo"].isEnabled)
+    }
+
     func testSecondaryTracksDragUndoPersistenceAndRotation() {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "--uitesting-reset", "--uitesting-fixture", "--uitesting-multitrack"]

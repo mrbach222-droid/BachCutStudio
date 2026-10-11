@@ -136,7 +136,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         trimOutline.addSubview(trimCaption); insertSubview(trimOutline, belowSubview: line)
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(longPress(_:)))
         hold.minimumPressDuration = 0.28; hold.allowableMovement = 14
-        collection.addGestureRecognizer(hold)
+        hold.delegate = self; addGestureRecognizer(hold)
         collection.panGestureRecognizer.require(toFail: hold)
         reorderGap.backgroundColor = UIColor.cyan.withAlphaComponent(0.15)
         reorderGap.layer.borderColor = UIColor.cyan.cgColor; reorderGap.layer.borderWidth = 2
@@ -424,6 +424,14 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         updateTrimFrames()
     }
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if let hold = gestureRecognizer as? UILongPressGestureRecognizer {
+            // Selected short clips can be entirely covered by their trim grips.
+            // A stationary hold on those grips should still lift the main clip;
+            // an immediate pan continues to trim before the hold recognises.
+            return collection.isUserInteractionEnabled && clips.count > 1 && !moving && !pinching &&
+                activeTrim == nil && draggingTrack == nil && !userScrolling &&
+                collection.indexPathForItem(at: hold.location(in: collection)) != nil
+        }
         guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return super.gestureRecognizerShouldBegin(gestureRecognizer) }
         let velocity = pan.velocity(in: self)
         // Leave vertical movement to the enclosing editor scroll view.
