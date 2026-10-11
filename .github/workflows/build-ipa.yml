@@ -50,9 +50,9 @@ jobs:
           test -s Payload/BachCutStudio.app/BachCutStudio
           test -s Payload/BachCutStudio.app/Assets.car
           /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Payload/BachCutStudio.app/Info.plist
-          zip -qry BachCutStudio_v0.11.0_unsigned.ipa Payload
-          unzip -t BachCutStudio_v0.11.0_unsigned.ipa
-          shasum -a 256 BachCutStudio_v0.11.0_unsigned.ipa > SHA256SUMS.txt
+          zip -qry BachCutStudio_v0.12.0_unsigned.ipa Payload
+          unzip -t BachCutStudio_v0.12.0_unsigned.ipa
+          shasum -a 256 BachCutStudio_v0.12.0_unsigned.ipa > SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -66,22 +66,22 @@ jobs:
           retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
-          name: BachCutStudio-v0.11.0-unsigned-IPA
+          name: BachCutStudio-v0.12.0-unsigned-IPA
           path: |
-            BachCutStudio_v0.11.0_unsigned.ipa
+            BachCutStudio_v0.12.0_unsigned.ipa
             SHA256SUMS.txt
           retention-days: 30
       - name: Publish tested IPA
         if: github.ref == 'refs/heads/main' && success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.11.0
-          name: BáchCut Studio v0.11.0
+          tag_name: v0.12.0
+          name: BáchCut Studio v0.12.0
           prerelease: true
           files: |
-            BachCutStudio_v0.11.0_unsigned.ipa
+            BachCutStudio_v0.12.0_unsigned.ipa
             SHA256SUMS.txt
           body: |
-            Timeline filmstrip shows successive source frames. Center timecode, magnetic cut snapping and native pinch-to-zoom with center-anchored playhead improve accurate scrubbing; reorder keeps playhead stationary. Centered playhead, long-press clip reorder, MP4/MOV H.264 or HEVC plus GIF export, editable music/overlay placement and lengths, direct drag of music and overlay tracks, multi-project autosave, undo/redo, trim/split, PiP, music and Landscape Pro.
+            Timeline filmstrip shows successive source frames. Center timecode, magnetic cut snapping and native pinch-to-zoom with center-anchored playhead improve accurate scrubbing; reorder keeps playhead stationary. Centered playhead, long-press clip reorder, MP4/MOV H.264 or HEVC plus GIF export, editable music/overlay placement and lengths, direct drag of music and overlay tracks, bounded composited preview caching for fast Undo/Redo, multi-project autosave, undo/redo, trim/split, PiP, music and Landscape Pro.
             Release is produced only after simulator unit/integration/UI tests pass. Unsigned IPA: sign before installation. Physical-device verification is still required before a production release.
           overwrite_files: true

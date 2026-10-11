@@ -167,6 +167,122 @@ final class StudioTests: XCTestCase {
         let index = (y * image.width + x) * 4
         return Array(bytes[index..<index + 4])
     }
+    @MainActor func testCompositedPreviewReuseOnUndoRedoAndCleanup() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("red.mov")
+        try await TestMedia.video(to: source, color: .red, duration: 1)
+        var project = StudioProject()
+        project.clips = [VideoSegment(url: source, start: 0, end: 1)]
+        project.ratio = .square
+        let model = EditorModel(project: project, store: ProjectStore(root: root))
+        await model.start()
+        try await waitForPreview(model)
+        let firstURL = try XCTUnwrap((model.player?.currentItem?.asset as? AVURLAsset)?.url,
+                                    "Composited preview should have a rendered movie")
+        XCTAssertEqual(model.previewReuseCount, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: firstURL.path))
+        model.setRatio(.portrait)
+        try await waitForPreview(model)
+        let secondURL = try XCTUnwrap((model.player?.currentItem?.asset as? AVURLAsset)?.url)
+        XCTAssertNotEqual(firstURL, secondURL, "A different canvas requires different frames")
+        model.undo()
+        try await waitForPreview(model)
+        let reusedFirst = try XCTUnwrap((model.player?.currentItem?.asset as? AVURLAsset)?.url)
+        XCTAssertEqual(reusedFirst, firstURL, "Undo must reuse the existing preview instead of re-encoding")
+        XCTAssertGreaterThanOrEqual(model.previewReuseCount, 1)
+        model.redo()
+        try await waitForPreview(model)
+        let reusedSecond = try XCTUnwrap((model.player?.currentItem?.asset as? AVURLAsset)?.url)
+        XCTAssertEqual(reusedSecond, secondURL, "Redo must reuse its earlier composited preview")
+        XCTAssertGreaterThanOrEqual(model.previewReuseCount, 2)
+        // Cancel many queued rebuilds before they get a main-actor turn.
+        // Only the final state may change the current player's readiness.
+        for _ in 0..<25 { model.undo(); model.redo() }
+        try await waitForPreview(model)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertTrue(model.playerReady, model.debugInfo)
+        XCTAssertFalse(model.rendering)
+        XCTAssertEqual((model.player?.currentItem?.asset as? AVURLAsset)?.url, secondURL)
+        model.close()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: secondURL.path))
+    }
+
+    @MainActor func testSelectionHoldsFrameAndRejectsObsoleteEndNotification() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.mov")
+        try await TestMedia.video(to: source, color: .red, duration: 2)
+        let model = EditorModel(store: ProjectStore(root: root)); defer { model.close() }
+        await model.add(url: source); try await waitForPreview(model)
+        let oldItem = try XCTUnwrap(model.player?.currentItem)
+        // Queue the old timeline's end event immediately before extending it.
+        NotificationCenter.default.post(name: .AVPlayerItemDidPlayToEndTime, object: oldItem)
+        model.duplicateSelected()
+        model.select(model.clips[1].id)
+        try await waitForPreview(model)
+        XCTAssertEqual(model.playhead, 2, accuracy: 0.02)
+        XCTAssertEqual(model.player?.currentTime().seconds ?? -1, 2, accuracy: 0.02)
+        model.seek(0); model.togglePlayback()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        model.select(model.clips[1].id)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertFalse(model.playing)
+        XCTAssertEqual(model.player?.rate, 0)
+        XCTAssertEqual(model.playhead, 2, accuracy: 0.02)
+        XCTAssertEqual(model.player?.currentTime().seconds ?? -1, 2, accuracy: 0.02)
+    }
+
+    @MainActor func testLatestSeekSurvivesCompositedPreviewReplacementAndClose() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.mov")
+        try await TestMedia.video(to: source, color: .blue, duration: 2)
+        let model = EditorModel(store: ProjectStore(root: root)); defer { model.close() }
+        await model.add(url: source); try await waitForPreview(model)
+        model.setRatio(.square)
+        for index in 0..<30 {
+            model.seek(Double(index) / 20)
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+        model.seek(1.375)
+        try await waitForPreview(model)
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(model.playhead, 1.375, accuracy: 0.02)
+        XCTAssertEqual(model.player?.currentTime().seconds ?? -1, 1.375, accuracy: 0.02)
+        model.setRatio(.portrait)
+        // Allow replacement work to start, then close while it is suspended.
+        await Task.yield()
+        model.close()
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertNil(model.player, "A canceled rebuild must not reopen a closed editor")
+        XCTAssertFalse(model.playerReady)
+        XCTAssertFalse(model.rendering)
+        XCTAssertTrue(model.cachedPreviewURLs.isEmpty)
+    }
+
+    @MainActor func testPreviewCacheEvictsOldFilesAndRecoversDeletedEntry() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.mov")
+        try await TestMedia.video(to: source, color: .green, duration: 1)
+        var project = StudioProject(); project.ratio = .square
+        project.clips = [VideoSegment(url: source, start: 0, end: 1)]
+        let model = EditorModel(project: project, store: ProjectStore(root: root)); defer { model.close() }
+        await model.start(); try await waitForPreview(model)
+        let first = try XCTUnwrap(model.cachedPreviewURLs.first)
+        model.setRatio(.portrait); try await waitForPreview(model)
+        model.setRatio(.square); model.setVolume(0.75); try await waitForPreview(model)
+        model.setVolume(0.5); try await waitForPreview(model)
+        XCTAssertEqual(model.cachedPreviewURLs.count, 3)
+        XCTAssertLessThanOrEqual(model.cachedPreviewBytes, 256 * 1024 * 1024)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path), "Evicted preview files must be removed")
+        let unavailable = try XCTUnwrap(model.cachedPreviewURLs.dropFirst().first)
+        try FileManager.default.removeItem(at: unavailable)
+        model.undo(); try await waitForPreview(model)
+        let regenerated = try XCTUnwrap((model.player?.currentItem?.asset as? AVURLAsset)?.url)
+        XCTAssertNotEqual(regenerated, unavailable)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: regenerated.path))
+        XCTAssertEqual(model.cachedPreviewURLs.count, 3)
+    }
+
     @MainActor func testModelImportEditingUndoPlaybackPersistenceAndExport() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("input.mov")
@@ -450,6 +566,55 @@ final class StudioTests: XCTestCase {
         XCTAssertGreaterThan(duringAudio, 500)
         XCTAssertLessThan(afterAudio, 200)
     }
+    @MainActor func testFractionalTrackMovesKeepPreviewAndExportPlayable() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let red = root.appendingPathComponent("red.mov"), green = root.appendingPathComponent("green.mov"), tone = root.appendingPathComponent("tone.caf")
+        try await TestMedia.video(to: red, color: .red, duration: 8)
+        try await TestMedia.video(to: green, color: .green, duration: 2)
+        try TestMedia.audio(to: tone, duration: 4)
+        var project = StudioProject()
+        project.clips = [VideoSegment(url: red, start: 0, end: 8)]
+        let overlay = OverlaySegment(clip: VideoSegment(url: green, start: 0, end: 2), offset: 2)
+        let sound = AudioSegment(url: tone, offset: 1, sourceDuration: 4)
+        project.overlays = [overlay]; project.audio = [sound]
+        let model = EditorModel(project: project, store: ProjectStore(root: root)); defer { model.close() }
+        await model.start(); try await waitForPreview(model)
+        model.moveAudioTrack(sound.id, to: 0.4166666666666667)
+        try await waitForPreview(model)
+        model.undo(); model.redo(); try await waitForPreview(model)
+        // Touch gestures produce fractional times, including positions between
+        // both source frames and the composition's 1/600-second ticks.
+        for offset in [2.5833333333333335, 2.671113764, 2.000444444] {
+            model.moveOverlayTrack(overlay.id, to: offset)
+            try await waitForPreview(model)
+            XCTAssertTrue(model.playerReady, model.debugInfo + " | " + model.progress)
+        }
+        await model.export()
+        let output = try XCTUnwrap(model.exportedURL, model.progress)
+        let asset = AVURLAsset(url: output)
+        let outputDuration = try await asset.load(.duration).seconds
+        XCTAssertEqual(outputDuration, 8, accuracy: 0.08)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+        let (before, _) = try await generator.image(at: MediaComposer.time(1.5))
+        let (during, _) = try await generator.image(at: MediaComposer.time(2.5))
+        let (after, _) = try await generator.image(at: MediaComposer.time(4.5))
+        XCTAssertGreaterThan(pixel(before, x: 120, y: 18)[0], 180)
+        XCTAssertGreaterThan(pixel(during, x: 120, y: 18)[1], 180)
+        XCTAssertGreaterThan(pixel(after, x: 120, y: 18)[0], 180)
+        let peak = try await audioPeak(asset: asset, start: 1, length: 0.2)
+        XCTAssertGreaterThan(peak, 500)
+
+        // A clip cut and an overlay can quantize to the same tick. The
+        // resulting composition must remain valid and export actual frames.
+        var split = model.project
+        split.clips = [VideoSegment(url: red, start: 0, end: 2.000333333), VideoSegment(url: red, start: 2.000333333, end: 8)]
+        let rendered = try await MediaComposer.build(split)
+        let valid = try await rendered.video.isValid(for: rendered.composition, timeRange: CMTimeRange(start: .zero, duration: rendered.composition.duration), validationDelegate: nil)
+        XCTAssertTrue(valid)
+        try await MediaComposer.export(rendered, to: root.appendingPathComponent("split.mp4"))
+    }
+
     func testConfiguredMovieContainersResolutionFPSAndMixedAudio() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let red = root.appendingPathComponent("red.mov"), blue = root.appendingPathComponent("blue.mov"), tone = root.appendingPathComponent("tone.caf")

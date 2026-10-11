@@ -359,6 +359,10 @@ private final class TimelineCell: UICollectionViewCell {
     func configure(_ clip: VideoSegment, index: Int, selected: Bool, image: [UIImage]?) {
         label.text = formatTime(clip.duration)
         accessibilityIdentifier = "clip_\(index)"; accessibilityLabel = "Đoạn \(index + 1), \(formatTime(clip.duration))"
+        accessibilityTraits = selected ? [.button, .selected] : .button
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--uitesting") { accessibilityValue = clip.id.uuidString }
+        #endif
         contentView.layer.borderWidth = selected ? 3 : 1; contentView.layer.borderColor = selected ? UIColor.cyan.cgColor : UIColor.black.cgColor
         let images = image ?? []
         if sourceImages.count != images.count || zip(sourceImages, images).contains(where: { $0.0 !== $0.1 }) {

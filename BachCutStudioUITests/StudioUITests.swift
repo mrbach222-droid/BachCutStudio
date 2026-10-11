@@ -29,8 +29,10 @@ final class StudioUITests: XCTestCase {
         if play.label == "Tạm dừng" { play.tap() }
         app.buttons["duplicateClip"].tap()
         XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn")
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
         app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch.tap()
         expectation(for: NSPredicate(format: "label == '00:08.0'"), evaluatedWith: time); waitForExpectations(timeout: 10)
+        XCTAssertEqual(play.label, "Phát", "Selecting a clip must pause at its edit point")
         app.descendants(matching: .any).matching(identifier: "clip_0").firstMatch.tap()
         expectation(for: NSPredicate(format: "label == '00:00.0'"), evaluatedWith: time); waitForExpectations(timeout: 10)
         app.buttons["undo"].tap(); XCTAssertEqual(app.staticTexts["clipCount"].label, "1 đoạn")
@@ -44,6 +46,8 @@ final class StudioUITests: XCTestCase {
         export.tap()
         XCTAssertTrue(app.buttons["confirmExport"].waitForExistence(timeout: 10))
         app.buttons["exportResolution"].tap(); app.buttons["480p"].tap()
+        // Let the native picker dismissal finish before preserving its image.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.8))
         let settings = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); settings.name = "Export options"; settings.lifetime = .keepAlways; add(settings)
         app.buttons["confirmExport"].tap()
         XCTAssertTrue(app.staticTexts["Đã xuất MP4 thành công"].waitForExistence(timeout: 40))
@@ -72,6 +76,10 @@ final class StudioUITests: XCTestCase {
         expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
         // Reveal the second clip at the center, then hold its thumbnail and drag before the first.
         app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch.tap()
+        let originalFirstID = app.descendants(matching: .any).matching(identifier: "clip_0").firstMatch.value as? String
+        let originalSecondID = app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch.value as? String
+        XCTAssertNotNil(originalFirstID); XCTAssertNotNil(originalSecondID)
+        XCTAssertNotEqual(originalFirstID, originalSecondID)
         let timeBeforeReorder = time.label
         XCTAssertNotEqual(timeBeforeReorder, "00:00.0", "Selection must move to the second clip before reordering")
         let second = app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch
@@ -81,10 +89,73 @@ final class StudioUITests: XCTestCase {
         expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
         XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn")
         XCTAssertTrue(app.buttons["undo"].isEnabled)
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "clip_0").firstMatch.value as? String, originalSecondID,
+                       "Long-press drag must actually put the second source clip before the first")
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch.value as? String, originalFirstID)
         XCTAssertEqual(time.label, timeBeforeReorder, "Long-press reorder must preserve the fixed center playhead")
         app.buttons["undo"].tap()
         XCTAssertEqual(app.staticTexts["clipCount"].label, "2 đoạn", "Reorder must be one undo action")
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "clip_0").firstMatch.value as? String, originalFirstID)
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch.value as? String, originalSecondID)
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); shot.name = "Centered timeline after drag"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    func testSecondaryTracksDragUndoPersistenceAndRotation() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--uitesting-reset", "--uitesting-fixture", "--uitesting-multitrack"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 30))
+        let home = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); home.name = "Project library"; home.lifetime = .keepAlways; add(home)
+        app.staticTexts["Kiểm thử Studio"].tap()
+        let play = app.buttons["playPause"]
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
+        let audio = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'audioTrack_' ")).firstMatch
+        let overlay = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'overlayTrack_' ")).firstMatch
+        XCTAssertTrue(audio.waitForExistence(timeout: 10)); XCTAssertTrue(overlay.exists)
+        let audioStart = audio.value as? String
+        XCTAssertEqual(audioStart, "00:01.0")
+        let time = app.staticTexts["playheadTime"]
+        let positionBeforeDrag = time.label
+        let from = audio.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        from.press(forDuration: 0.05, thenDragTo: from.withOffset(CGVector(dx: -24, dy: 0)))
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
+        let movedAudio = audio.value as? String
+        XCTAssertNotEqual(movedAudio, audioStart, "Dragging the music block must commit its offset")
+        XCTAssertEqual(time.label, positionBeforeDrag, "Secondary-track drag must hold the central playhead")
+        app.buttons["undo"].tap()
+        XCTAssertEqual(audio.value as? String, audioStart)
+        app.buttons["redo"].tap()
+        XCTAssertEqual(audio.value as? String, movedAudio)
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
+        let originalOverlay = overlay.value as? String
+        let overlayFrom = overlay.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        overlayFrom.press(forDuration: 0.05, thenDragTo: overlayFrom.withOffset(CGVector(dx: 24, dy: 0)))
+        waitForReady(app)
+        let movedOverlay = overlay.value as? String
+        XCTAssertNotEqual(movedOverlay, originalOverlay, "Dragging the overlay block must commit its offset")
+        XCTAssertEqual(time.label, positionBeforeDrag)
+        let portrait = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); portrait.name = "Portrait multi-track editor"; portrait.lifetime = .keepAlways; add(portrait)
+        rotateAndSettle(app, landscape: true)
+        XCTAssertEqual(audio.value as? String, movedAudio); XCTAssertEqual(overlay.value as? String, movedOverlay)
+        let landscape = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); landscape.name = "Landscape multi-track editor"; landscape.lifetime = .keepAlways; add(landscape)
+        app.terminate(); app.launchArguments = ["--uitesting"]; app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 20)); app.staticTexts["Kiểm thử Studio"].tap()
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: app.buttons["playPause"]); waitForExpectations(timeout: 20)
+        XCTAssertEqual(audio.value as? String, movedAudio)
+        XCTAssertEqual(overlay.value as? String, movedOverlay)
+    }
+
+    func waitForReady(_ app: XCUIApplication) {
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["playPause"])
+        let result = XCTWaiter.wait(for: [ready], timeout: 20)
+        if result != .completed {
+            let state = app.staticTexts["playerDebug"]
+            let status = app.staticTexts["statusMessage"]
+            let detail = (state.exists ? state.label : "No player diagnostics") + " | " + (status.exists ? status.label : "No status message")
+            let snapshot = XCTAttachment(string: app.debugDescription); snapshot.name = "Multi-track failure hierarchy"; snapshot.lifetime = .keepAlways; add(snapshot)
+            print("MULTITRACK_FAILURE " + detail)
+            XCTAssertEqual(result, .completed, detail)
+        }
     }
 
     func rotateAndSettle(_ app: XCUIApplication, landscape: Bool) {
