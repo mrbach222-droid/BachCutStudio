@@ -31,13 +31,13 @@ enum TestMedia {
         await writer.finishWriting()
         guard writer.status == .completed else { throw writer.error ?? StudioError.message("Fixture failed") }
     }
-    static func audio(to url: URL, duration: Double) throws {
+    static func audio(to url: URL, duration: Double, silentPrefix: Double = 0) throws {
         let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
         let frames = AVAudioFrameCount(duration * 44100)
         let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
         buffer.frameLength = frames
-        for i in 0..<Int(frames) { buffer.floatChannelData![0][i] = Float(sin(Double(i) * 2 * .pi * 440 / 44100) * 0.2) }
+        for i in 0..<Int(frames) { buffer.floatChannelData![0][i] = Double(i) / 44100 < silentPrefix ? 0 : Float(sin(Double(i) * 2 * .pi * 440 / 44100) * 0.2) }
         try file.write(from: buffer)
     }
 }
