@@ -2,6 +2,8 @@ import SwiftUI
 import UIKit
 
 struct TimelineTrack {
+    let id: UUID?
+    let isOverlay: Bool
     let label: String
     let start: Double
     let duration: Double
@@ -23,12 +25,15 @@ struct CenteredTimeline: UIViewRepresentable {
     let changeZoom: (Double) -> Void
     let beginMove: (UUID) -> Void
     let move: (UUID, Int) -> Void
+    let tapTrack: (UUID, Bool) -> Void
+    let moveTrack: (UUID, Bool, Double) -> Void
 
     func makeUIView(context: Context) -> TimelineSurface { TimelineSurface() }
     func updateUIView(_ view: TimelineSurface, context: Context) {
         view.onSelect = select; view.onBeginScrub = beginScrub; view.onScrub = scrub
         view.onEndScrub = endScrub; view.onZoomChange = changeZoom
         view.onBeginMove = beginMove; view.onMove = move
+        view.onTapTrack = tapTrack; view.onMoveTrack = moveTrack
         view.apply(project: project, selected: selected, thumbnails: thumbnails, zoom: zoom, playhead: playhead, enabled: enabled)
     }
     static func dismantleUIView(_ view: TimelineSurface, coordinator: ()) { view.cancelInteraction() }
@@ -41,6 +46,10 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     private let line = UIView()
     private let timeLabel = UILabel()
     private var clips: [VideoSegment] = []
+    private var tracks: [TimelineTrack] = []
+    private var trackHandles: [UUID: TimelineTrackHandle] = [:]
+    private var draggingTrack: UUID?
+    private var trackDragStart = 0.0
     private var selected: UUID?
     private var thumbnails: [UUID: [UIImage]] = [:]
     private var zoom = 24.0
@@ -60,6 +69,8 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     var onZoomChange: ((Double) -> Void)?
     var onBeginMove: ((UUID) -> Void)?
     var onMove: ((UUID, Int) -> Void)?
+    var onTapTrack: ((UUID, Bool) -> Void)?
+    var onMoveTrack: ((UUID, Bool, Double) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -109,9 +120,11 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         let changed = clips != project.clips || self.zoom != zoom
         self.selected = selected; self.thumbnails = thumbnails; self.zoom = zoom
         duration = project.duration; time = playhead
-        canvas.tracks = project.overlays.map { TimelineTrack(label: "V2 · Lớp phủ", start: $0.offset, duration: min($0.clip.duration, max(0, duration - $0.offset)), color: .systemPurple) }
-            + [TimelineTrack(label: "A1 · Âm thanh nguồn", start: 0, duration: duration, color: .systemTeal)]
-            + project.audio.map { TimelineTrack(label: "A2 · Nhạc", start: $0.offset, duration: min($0.sourceDuration, max(0, duration - $0.offset)), color: .systemGreen) }
+        tracks = project.overlays.map { TimelineTrack(id: $0.id, isOverlay: true, label: "V2 · Lớp phủ", start: $0.offset, duration: min($0.clip.duration, max(0, duration - $0.offset)), color: .systemPurple) }
+            + [TimelineTrack(id: nil, isOverlay: false, label: "A1 · Âm thanh nguồn", start: 0, duration: duration, color: .systemTeal)]
+            + project.audio.map { TimelineTrack(id: $0.id, isOverlay: false, label: "A2 · Nhạc", start: $0.offset, duration: min($0.duration, max(0, duration - $0.offset)), color: .systemGreen) }
+        canvas.tracks = tracks
+        configureTrackHandles(enabled: enabled)
         collection.isUserInteractionEnabled = enabled
         if changed && !moving {
             clips = project.clips
@@ -151,8 +164,82 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         if gap <= distance { result = boundary }
         return result
     }
+    // Clip handles are native views layered above the scroller; only the visible
+    // position moves during a pan, so AVFoundation is never rebuilt on each frame.
+    static func clampedTrackOffset(start: Double, dragPoints: CGFloat, zoom: Double,
+                                   timelineDuration: Double, trackDuration: Double) -> Double {
+        guard start.isFinite, dragPoints.isFinite, zoom.isFinite, zoom > 0,
+              timelineDuration.isFinite, trackDuration.isFinite else { return 0 }
+        return min(max(0, timelineDuration - trackDuration), max(0, start + Double(dragPoints) / zoom))
+    }
+    private func configureTrackHandles(enabled: Bool) {
+        let active = Set(tracks.compactMap(\.id))
+        for id in Array(trackHandles.keys) where !active.contains(id) {
+            trackHandles[id]?.removeFromSuperview(); trackHandles.removeValue(forKey: id)
+        }
+        for track in tracks {
+            guard let id = track.id else { continue }
+            if trackHandles[id] == nil {
+                let handle = TimelineTrackHandle(id: id, isOverlay: track.isOverlay)
+                let pan = UIPanGestureRecognizer(target: self, action: #selector(dragTrack(_:)))
+                pan.maximumNumberOfTouches = 1; handle.addGestureRecognizer(pan)
+                collection.panGestureRecognizer.require(toFail: pan)
+                let tap = UITapGestureRecognizer(target: self, action: #selector(tapTrackHandle(_:)))
+                handle.addGestureRecognizer(tap)
+                insertSubview(handle, belowSubview: line)
+                trackHandles[id] = handle
+            }
+            trackHandles[id]?.configure(label: track.label, color: track.color, enabled: enabled)
+        }
+        updateTrackFrames()
+    }
+    private func updateTrackFrames() {
+        for (index, track) in tracks.enumerated() {
+            guard let id = track.id, id != draggingTrack, let handle = trackHandles[id] else { continue }
+            handle.frame = CGRect(x: -collection.contentOffset.x + CGFloat(track.start * zoom),
+                                  y: CGFloat(96 + index * 32),
+                                  width: CGFloat(max(1, track.duration * zoom)), height: 26)
+            handle.accessibilityValue = formatTime(track.start)
+        }
+    }
+    @objc private func tapTrackHandle(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended, let handle = gesture.view as? TimelineTrackHandle else { return }
+        onTapTrack?(handle.trackID, handle.isOverlay)
+    }
+    @objc private func dragTrack(_ gesture: UIPanGestureRecognizer) {
+        guard let handle = gesture.view as? TimelineTrackHandle,
+              let track = tracks.first(where: { $0.id == handle.trackID }) else { return }
+        switch gesture.state {
+        case .began:
+            guard !moving, !pinching, !userScrolling else { return }
+            draggingTrack = handle.trackID
+            trackDragStart = track.start
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        case .changed:
+            guard draggingTrack == handle.trackID else { return }
+            let proposed = Self.clampedTrackOffset(start: trackDragStart,
+                dragPoints: gesture.translation(in: self).x, zoom: zoom,
+                timelineDuration: duration, trackDuration: track.duration)
+            handle.frame.origin.x = -collection.contentOffset.x + CGFloat(proposed * zoom)
+            handle.accessibilityValue = formatTime(proposed)
+        case .ended:
+            guard draggingTrack == handle.trackID else { return }
+            let proposed = Self.clampedTrackOffset(start: trackDragStart,
+                dragPoints: gesture.translation(in: self).x, zoom: zoom,
+                timelineDuration: duration, trackDuration: track.duration)
+            draggingTrack = nil
+            if abs(proposed - trackDragStart) > 0.001 {
+                UISelectionFeedbackGenerator().selectionChanged()
+                onMoveTrack?(handle.trackID, handle.isOverlay, proposed)
+            } else { updateTrackFrames() }
+        case .cancelled, .failed:
+            if draggingTrack == handle.trackID { draggingTrack = nil; updateTrackFrames() }
+        default: break
+        }
+    }
     private func updateMarks() {
         canvas.origin = -collection.contentOffset.x; canvas.zoom = zoom; canvas.duration = duration; canvas.setNeedsDisplay()
+        updateTrackFrames()
     }
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { clips.count }
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
@@ -218,6 +305,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         if moving { collection.cancelInteractiveMovement(); moving = false }
         if pinching { pinching = false; onEndScrub?(time) }
         if userScrolling { finishScrub() }
+        if draggingTrack != nil { draggingTrack = nil; updateTrackFrames() }
     }
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         guard !pinching else { return }
@@ -308,11 +396,43 @@ private final class TimelineMarks: UIView {
             }
         }
         for (index, track) in tracks.enumerated() {
+            // Interactive audio and overlay blocks are native pan-enabled views above this canvas.
+            guard track.id == nil else { continue }
             let box = CGRect(x: origin + track.start * zoom, y: Double(96 + index * 32), width: track.duration * zoom, height: 26)
             let visible = box.intersection(bounds)
             guard !visible.isNull else { continue }
             track.color.withAlphaComponent(0.25).setFill(); UIRectFill(visible)
             (track.label as NSString).draw(at: CGPoint(x: max(box.minX + 5, 5), y: box.minY + 6), withAttributes: [.font: UIFont.systemFont(ofSize: 10), .foregroundColor: UIColor.white])
         }
+    }
+}
+
+private final class TimelineTrackHandle: UIView {
+    let trackID: UUID
+    let isOverlay: Bool
+    private let caption = UILabel()
+    init(id: UUID, isOverlay: Bool) {
+        self.trackID = id; self.isOverlay = isOverlay
+        super.init(frame: .zero)
+        layer.cornerRadius = 5; layer.borderWidth = 1.5; layer.borderColor = UIColor.white.withAlphaComponent(0.6).cgColor
+        clipsToBounds = true
+        caption.font = .systemFont(ofSize: 10, weight: .semibold)
+        caption.textColor = .white; caption.lineBreakMode = .byTruncatingTail
+        caption.isUserInteractionEnabled = false; addSubview(caption)
+        isAccessibilityElement = true
+        accessibilityTraits = [.button, .allowsDirectInteraction]
+        accessibilityIdentifier = (isOverlay ? "overlayTrack_" : "audioTrack_") + id.uuidString
+        accessibilityHint = "Kéo ngang để đổi vị trí. Chạm để sửa thời lượng."
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        caption.frame = bounds.insetBy(dx: 5, dy: 3)
+    }
+    func configure(label: String, color: UIColor, enabled: Bool) {
+        caption.text = "↔ " + label
+        backgroundColor = color.withAlphaComponent(0.65)
+        isUserInteractionEnabled = enabled
+        accessibilityLabel = label
     }
 }
