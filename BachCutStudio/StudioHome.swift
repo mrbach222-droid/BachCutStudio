@@ -113,6 +113,10 @@ struct StudioHome: View {
                                 p.overlays = [OverlaySegment(clip: VideoSegment(url: overlay, start: 0, end: 2), offset: 2)]
                                 p.audio = [AudioSegment(url: sound, offset: 1, sourceDuration: 4)]
                             }
+                            if ProcessInfo.processInfo.arguments.contains("--uitesting-insert") {
+                                try await TestMedia.video(to: store.mediaDirectory.appendingPathComponent("insert-blue.mov"), color: .blue, duration: 2)
+                                try await TestMedia.video(to: store.mediaDirectory.appendingPathComponent("insert-green.mov"), color: .green, duration: 2)
+                            }
                             try store.save(p)
                         }
                         #endif
@@ -136,23 +140,33 @@ struct StudioHome: View {
 }
 struct LibraryVideoButton: View {
     @ObservedObject var model: EditorModel
+    var insertAtPlayhead = false
     @State private var picked: [PhotosPickerItem] = []
     @State private var loading = false
+    @State private var showingPicker = false
+    @State private var insertionTime: Double?
     var body: some View {
-        PhotosPicker(selection: $picked, maxSelectionCount: 30, matching: .videos, photoLibrary: .shared()) { Label(loading ? "Đang nhập…" : "Thư viện", systemImage: "photo.on.rectangle") }
+        Button {
+            model.pause(); insertionTime = insertAtPlayhead ? model.playhead : nil; showingPicker = true
+        } label: { Label(loading ? "Đang nhập…" : "Thư viện", systemImage: "photo.on.rectangle") }
+            .photosPicker(isPresented: $showingPicker, selection: $picked, maxSelectionCount: 30, selectionBehavior: .ordered, matching: .videos, photoLibrary: .shared())
             .disabled(loading || model.busy)
             .onChange(of: picked) { items in
                 guard !items.isEmpty else { return }; loading = true
+                let time = insertionTime
                 Task { @MainActor in
-                    for item in items {
-                        do {
-                            if let movie = try await item.loadTransferable(type: ImportedMovie.self) {
-                                await model.add(url: movie.url)
-                                try? FileManager.default.removeItem(at: movie.url)
-                            } else { model.progress = "Không đọc được video từ Thư viện" }
-                        } catch { model.progress = "Không nhập được: " + error.localizedDescription }
+                    var movies: [ImportedMovie] = []
+                    defer {
+                        for movie in movies { try? FileManager.default.removeItem(at: movie.url) }
+                        picked = []; loading = false
                     }
-                    picked = []; loading = false
+                    do {
+                        for item in items {
+                            guard let movie = try await item.loadTransferable(type: ImportedMovie.self) else { throw StudioError.message("Không đọc được video từ Thư viện") }
+                            movies.append(movie)
+                        }
+                        await model.add(urls: movies.map(\.url), insertionTime: time)
+                    } catch { model.progress = "Không nhập được: " + error.localizedDescription }
                 }
             }
     }

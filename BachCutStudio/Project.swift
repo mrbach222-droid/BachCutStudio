@@ -105,6 +105,31 @@ struct StudioProject: Identifiable, Codable, Equatable {
         clips.insert(right, at: i + 1)
         return right.id
     }
+    // Returns the actual cut time after snapping away from fragments below 50 ms.
+    // Secondary tracks retain their absolute timeline positions.
+    @discardableResult mutating func insert(_ videos: [VideoSegment], at requestedTime: Double) -> Double {
+        guard !videos.isEmpty else { return 0 }
+        let time = requestedTime.isFinite ? min(duration, max(0, requestedTime)) : duration
+        var cursor = 0.0
+        for index in clips.indices {
+            let end = cursor + clips[index].duration
+            if time < end {
+                if time - cursor <= 0.05 {
+                    clips.insert(contentsOf: videos, at: index); return cursor
+                }
+                if end - time <= 0.05 {
+                    clips.insert(contentsOf: videos, at: index + 1); return end
+                }
+                let sourceTime = clips[index].start + (time - cursor) * clips[index].speed
+                var right = clips[index]; right.id = UUID(); right.start = sourceTime
+                clips[index].end = sourceTime
+                clips.insert(contentsOf: videos + [right], at: index + 1)
+                return time
+            }
+            cursor = end
+        }
+        clips.append(contentsOf: videos); return cursor
+    }
     mutating func duplicate(id: UUID) -> UUID? {
         guard let i = clips.firstIndex(where: { $0.id == id }) else { return nil }
         var copy = clips[i]; copy.id = UUID()

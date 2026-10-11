@@ -1,7 +1,8 @@
 # BáchCut Studio
 
-Native SwiftUI / AVFoundation iPhone video editor. Current release candidate: **0.15.0**, iOS 16+.
+Native SwiftUI / AVFoundation iPhone video editor. Current release candidate: **0.16.0**, iOS 16+.
 
+- Import from Photos or Files either at the end or at the captured playhead. Inserting inside a clip splits its source range correctly at its speed; the complete selected batch is inserted in order with one Undo/Redo step. Cuts snap within 50 ms to avoid tiny fragments. Music and overlay offsets remain absolute. The selection is validated before committing; failure removes imported copies and leaves the project untouched.
 - Separate saved projects with autosave, migration from the 0.3 project, portable media paths, undo / redo.
 - Native UICollectionView timeline with a fixed central playhead, precise center timecode, magnetic cut-boundary snapping, native two-finger pinch zoom that keeps the playhead stationary, drag-to-scrub, coalesced seeks, inertial scrolling, long-press clip reorder with equal-width compact thumbnails, a visible insertion gap, constrained drag feedback and continuous edge scrolling, trim, split, duplicate, speed and source volume. Up to 20 sampled frames per clip show the scene progression; frames are cached until that clip's source, trim or speed changes. Cells are reused and only visible ruler/track marks are drawn.
 - Native edge grips cut or extend the selected main clip and every music/overlay track directly on the timeline. Drag previews update locally; releasing commits one Undo/Redo step. Main clips ripple; a secondary in-point keeps its out-point fixed and updates source start with its offset. Bounds respect original media, speed, and the base timeline. VoiceOver adjusts a grip by 0.1 seconds; canceling or rotating during a drag discards its preview.

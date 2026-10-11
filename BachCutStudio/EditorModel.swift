@@ -167,32 +167,51 @@ import Photos
     func redo() { guard !busy, let next = redoStack.popLast() else { return }; undoStack.append(project); project = next; finishEdit() }
     enum ImportKind { case video, audio, overlay }
     func add(url: URL, kind: ImportKind = .video) async {
-        guard !busy else { return }
+        await add(urls: [url], kind: kind)
+    }
+    // Copy/validate the complete selection before changing the saved project.
+    // A multi-video insertion and optional split are one history transaction.
+    func add(urls: [URL], kind: ImportKind = .video, insertionTime: Double? = nil) async {
+        guard !busy, !urls.isEmpty else { return }
+        pause()
+        let anchor = insertionTime ?? playhead
         busy = true; progress = "Đang nhập…"
         defer { busy = false }
-        let access = url.startAccessingSecurityScopedResource()
-        defer { if access { url.stopAccessingSecurityScopedResource() } }
-        var copy: URL?
+        var copies: [URL] = []
         do {
-            try store.prepare()
-            let destination = store.mediaDirectory.appendingPathComponent(UUID().uuidString + "." + (url.pathExtension.isEmpty ? "mov" : url.pathExtension))
-            try await Task.detached(priority: .userInitiated) { try FileManager.default.copyItem(at: url, to: destination) }.value; copy = destination
-            let asset = AVURLAsset(url: destination)
-            let length = try await asset.load(.duration).seconds
-            guard length.isFinite, length > 0.05 else { throw StudioError.message("Tệp quá ngắn hoặc không hợp lệ") }
-            let mediaType: AVMediaType = kind == .audio ? .audio : .video
-            guard !(try await asset.loadTracks(withMediaType: mediaType)).isEmpty else { throw StudioError.message(kind == .audio ? "Tệp không có âm thanh" : "Tệp không có video") }
             if kind == .overlay && clips.isEmpty { throw StudioError.message("Thêm video chính trước lớp phủ") }
+            try store.prepare()
+            var videos: [VideoSegment] = []
+            for url in urls {
+                let access = url.startAccessingSecurityScopedResource()
+                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                let destination = store.mediaDirectory.appendingPathComponent(UUID().uuidString + "." + (url.pathExtension.isEmpty ? "mov" : url.pathExtension))
+                copies.append(destination)
+                try await Task.detached(priority: .userInitiated) { try FileManager.default.copyItem(at: url, to: destination) }.value
+                let asset = AVURLAsset(url: destination)
+                let length = try await asset.load(.duration).seconds
+                guard length.isFinite, length > 0.05 else { throw StudioError.message("Tệp quá ngắn hoặc không hợp lệ") }
+                let mediaType: AVMediaType = kind == .audio ? .audio : .video
+                guard !(try await asset.loadTracks(withMediaType: mediaType)).isEmpty else { throw StudioError.message(kind == .audio ? "Tệp không có âm thanh" : "Tệp không có video") }
+                videos.append(VideoSegment(url: destination, start: 0, end: length, sourceDuration: length))
+            }
             let prior = project
-            let clip = VideoSegment(url: destination, start: 0, end: length, sourceDuration: length)
             switch kind {
-            case .video: project.clips.append(clip); selected = clip.id
-            case .audio: project.audio.append(AudioSegment(url: destination, offset: playhead, sourceDuration: length))
-            case .overlay: project.overlays.append(OverlaySegment(clip: clip, offset: playhead))
+            case .video:
+                if insertionTime != nil { playhead = project.insert(videos, at: anchor) }
+                else { project.clips.append(contentsOf: videos) }
+                selected = videos.first?.id
+            case .audio:
+                project.audio.append(contentsOf: videos.map { AudioSegment(url: $0.url, offset: anchor, sourceDuration: $0.sourceDuration) })
+            case .overlay:
+                project.overlays.append(contentsOf: videos.map { OverlaySegment(clip: $0, offset: anchor) })
             }
             undoStack.append(prior); if undoStack.count > 50 { undoStack.removeFirst() }; redoStack.removeAll(); finishEdit()
-            progress = "Đã nhập và lưu dự án"
-        } catch { if let copy { try? FileManager.default.removeItem(at: copy) }; progress = "Không nhập được: " + error.localizedDescription }
+            progress = insertionTime != nil && kind == .video ? "Đã chèn \(videos.count) video tại vạch tua · Nhạc/lớp phủ giữ vị trí" : "Đã nhập và lưu dự án"
+        } catch {
+            for copy in copies { try? FileManager.default.removeItem(at: copy) }
+            progress = "Không nhập được: " + error.localizedDescription
+        }
     }
     func select(_ id: UUID) {
         guard clips.contains(where: { $0.id == id }) else { return }

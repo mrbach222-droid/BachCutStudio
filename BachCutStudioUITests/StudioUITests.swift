@@ -362,6 +362,32 @@ final class StudioUITests: XCTestCase {
         from.press(forDuration: 0.05, thenDragTo: from.withOffset(CGVector(dx: points, dy: 0)))
     }
 
+    func testNativeBatchInsertionUndoRedoLandscapeAndRelaunch() {
+        let app = XCUIApplication(); app.launchArguments = ["--uitesting", "--uitesting-reset", "--uitesting-fixture", "--uitesting-insert"]; app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 30)); app.staticTexts["Kiểm thử Studio"].tap(); waitForReady(app)
+        app.sliders["scrubber"].adjust(toNormalizedSliderPosition: 0.5)
+        let time = app.staticTexts["playheadTime"].label
+        app.buttons["importPlacement"].tap(); app.buttons["importAtPlayhead"].tap()
+        let options = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); options.name = "Native insert mode before import"; options.lifetime = .keepAlways; add(options)
+        app.buttons["Tệp"].tap()
+        let inserted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == '4 đoạn'"), object: app.staticTexts["clipCount"])
+        XCTAssertEqual(XCTWaiter.wait(for: [inserted], timeout: 25), .completed)
+        waitForReady(app)
+        XCTAssertEqual(app.staticTexts["clipCount"].label, "4 đoạn")
+        XCTAssertEqual(app.staticTexts["durationTime"].label, "00:12.0")
+        XCTAssertEqual(app.staticTexts["playheadTime"].label, time)
+        XCTAssertTrue(app.buttons["undo"].isEnabled)
+        let portrait = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); portrait.name = "Native batch inserted at playhead"; portrait.lifetime = .keepAlways; add(portrait)
+        app.buttons["undo"].tap(); waitForReady(app)
+        XCTAssertEqual(app.staticTexts["clipCount"].label, "1 đoạn"); XCTAssertFalse(app.buttons["undo"].isEnabled)
+        app.buttons["redo"].tap(); waitForReady(app); XCTAssertEqual(app.staticTexts["clipCount"].label, "4 đoạn")
+        rotateAndSettle(app, landscape: true)
+        let landscape = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); landscape.name = "Native inserted clips Landscape Pro"; landscape.lifetime = .keepAlways; add(landscape)
+        rotateAndSettle(app, landscape: false)
+        app.terminate(); app.launchArguments = ["--uitesting"]; app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 20)); app.staticTexts["Kiểm thử Studio"].tap(); waitForReady(app)
+        XCTAssertEqual(app.staticTexts["clipCount"].label, "4 đoạn"); XCTAssertEqual(app.staticTexts["durationTime"].label, "00:12.0")
+    }
     func waitForReady(_ app: XCUIApplication) {
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["playPause"])
         let result = XCTWaiter.wait(for: [ready], timeout: 20)
