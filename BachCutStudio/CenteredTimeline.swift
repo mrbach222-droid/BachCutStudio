@@ -49,6 +49,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     private let line = UIView()
     private let timeLabel = UILabel()
     private var clips: [VideoSegment] = []
+    private var projectID: UUID?
     private var tracks: [TimelineTrack] = []
     private var trackHandles: [UUID: TimelineTrackHandle] = [:]
     private var draggingTrack: UUID?
@@ -76,6 +77,19 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     private var pinching = false
     private var pinchStartZoom = 24.0
     private var moving = false
+    private struct ReorderSession {
+        let original: [VideoSegment]
+        let id: UUID
+        let origin: Int
+        var target: Int
+    }
+    private var reorderSession: ReorderSession?
+    private var reorderPoint = CGPoint.zero
+    private var reorderDisplayLink: CADisplayLink?
+    private var reorderTicker: TimelineReorderTicker?
+    private var reorderGhost: TimelineCell?
+    private let reorderGap = UIView()
+    private let reorderHint = UILabel()
     private var synchronizing = false
     private var lastWidth: CGFloat = 0
     private var lastScrub: CFTimeInterval = 0
@@ -121,7 +135,21 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         trimCaption.clipsToBounds = true
         trimOutline.addSubview(trimCaption); insertSubview(trimOutline, belowSubview: line)
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(longPress(_:)))
-        hold.minimumPressDuration = 0.35; collection.addGestureRecognizer(hold)
+        hold.minimumPressDuration = 0.28; hold.allowableMovement = 14
+        hold.delegate = self; addGestureRecognizer(hold)
+        collection.panGestureRecognizer.require(toFail: hold)
+        reorderGap.backgroundColor = UIColor.cyan.withAlphaComponent(0.15)
+        reorderGap.layer.borderColor = UIColor.cyan.cgColor; reorderGap.layer.borderWidth = 2
+        reorderGap.layer.cornerRadius = 5; reorderGap.isUserInteractionEnabled = false
+        reorderGap.isHidden = true; reorderGap.isAccessibilityElement = true
+        reorderGap.accessibilityIdentifier = "reorderInsertion"
+        reorderGap.accessibilityLabel = "Vị trí chèn đoạn video"
+        insertSubview(reorderGap, belowSubview: line)
+        reorderHint.font = .systemFont(ofSize: 12, weight: .medium)
+        reorderHint.textColor = .cyan; reorderHint.textAlignment = .center
+        reorderHint.isUserInteractionEnabled = false; reorderHint.isHidden = true
+        reorderHint.accessibilityIdentifier = "reorderHint"
+        addSubview(reorderHint)
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinchZoom(_:)))
         addGestureRecognizer(pinch)
     }
@@ -134,6 +162,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         timeLabel.frame = CGRect(x: bounds.midX - 38, y: 0, width: 76, height: 22)
         updateTimecode()
         if lastWidth != bounds.width {
+            finishReorder(commit: false)
             cancelTrim()
             lastWidth = bounds.width
             synchronizing = true
@@ -144,6 +173,10 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         updateMarks()
     }
     func apply(project: StudioProject, selected: UUID?, thumbnails: [UUID: [UIImage]], zoom: Double, playhead: Double, enabled: Bool) {
+        if let session = reorderSession, !enabled || projectID != project.id || project.clips != session.original || self.zoom != zoom {
+            finishReorder(commit: false)
+        }
+        projectID = project.id
         if let session = activeTrim,
            !enabled || self.zoom != zoom || project.duration != session.timelineDuration ||
            project.trimSpan(id: session.key.id, kind: session.key.kind) != session.original ||
@@ -163,14 +196,16 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
             synchronizing = true; collection.reloadData(); layout.invalidateLayout(); collection.layoutIfNeeded(); synchronizing = false
         }
         for index in collection.indexPathsForVisibleItems where clips.indices.contains(index.item) {
-            (collection.cellForItem(at: index) as? TimelineCell)?.configure(clips[index.item], index: index.item, selected: clips[index.item].id == selected, image: thumbnails[clips[index.item].id])
+            let cell = collection.cellForItem(at: index) as? TimelineCell
+            cell?.configure(clips[index.item], index: index.item, selected: clips[index.item].id == selected, image: thumbnails[clips[index.item].id], compact: moving)
+            if moving { cell?.alpha = clips[index.item].id == reorderSession?.id ? 0 : 1 }
         }
         if !userScrolling && !moving { setPosition() }
         updateTimecode()
         updateMarks()
     }
     private func setPosition() {
-        guard bounds.width > 0 else { return }
+        guard bounds.width > 0, !moving else { return }
         let x = CGFloat(time * zoom) - collection.contentInset.left
         if abs(collection.contentOffset.x - x) > 0.25 {
             synchronizing = true; collection.setContentOffset(CGPoint(x: x, y: 0), animated: false); synchronizing = false
@@ -222,6 +257,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
                 trackHandles[id] = handle
             }
             trackHandles[id]?.configure(label: track.label, color: track.color, enabled: enabled)
+            trackHandles[id]?.isHidden = moving
         }
         updateTrackFrames()
         updateTrimFrames()
@@ -339,7 +375,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
                 handle.frame = CGRect(x: center - hitWidth / 2, y: item.y, width: hitWidth, height: item.height)
                 // Keep near-edge grips reachable, and never hide the view that
                 // owns an active gesture when its boundary leaves the viewport.
-                handle.isHidden = activeTrim?.key != key && (boundary < -8 || boundary > bounds.width + 8)
+                handle.isHidden = moving || (activeTrim?.key != key && (boundary < -8 || boundary > bounds.width + 8))
                 handle.accessibilityValue = formatTime(edge == .start ? span.sourceStart : span.sourceEnd)
             }
             if session != nil {
@@ -388,6 +424,14 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         updateTrimFrames()
     }
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if let hold = gestureRecognizer as? UILongPressGestureRecognizer {
+            // Selected short clips can be entirely covered by their trim grips.
+            // A stationary hold on those grips should still lift the main clip;
+            // an immediate pan continues to trim before the hold recognises.
+            return collection.isUserInteractionEnabled && clips.count > 1 && !moving && !pinching &&
+                activeTrim == nil && draggingTrack == nil && !userScrolling &&
+                collection.indexPathForItem(at: hold.location(in: collection)) != nil
+        }
         guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return super.gestureRecognizerShouldBegin(gestureRecognizer) }
         let velocity = pan.velocity(in: self)
         // Leave vertical movement to the enclosing editor scroll view.
@@ -407,17 +451,12 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "clip", for: indexPath) as! TimelineCell
         let clip = clips[indexPath.item]
-        cell.configure(clip, index: indexPath.item, selected: clip.id == selected, image: thumbnails[clip.id]); return cell
+        cell.configure(clip, index: indexPath.item, selected: clip.id == selected, image: thumbnails[clip.id], compact: moving)
+        cell.alpha = moving && clip.id == reorderSession?.id ? 0 : 1
+        return cell
     }
-    func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize { CGSize(width: max(1, clips[indexPath.item].duration * zoom), height: 60) }
-    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) { onSelect?(clips[indexPath.item].id) }
-    func collectionView(_ collectionView: UICollectionView, canMoveItemAt indexPath: IndexPath) -> Bool { clips.count > 1 }
-    func collectionView(_ collectionView: UICollectionView, moveItemAt sourceIndexPath: IndexPath, to destinationIndexPath: IndexPath) {
-        let clip = clips.remove(at: sourceIndexPath.item); clips.insert(clip, at: destinationIndexPath.item)
-        moving = false; onMove?(clip.id, destinationIndexPath.item)
-        // Durations travel with their clips; rebuild widths and accessibility indices after the drop.
-        DispatchQueue.main.async { [weak self] in self?.collection.reloadData(); self?.layout.invalidateLayout() }
-    }
+    func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize { CGSize(width: moving ? TimelineReorderGeometry.width : max(1, clips[indexPath.item].duration * zoom), height: 60) }
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) { if !moving { onSelect?(clips[indexPath.item].id) } }
     // Zoom is anchored at the fixed center playhead, independently of finger position.
     // Applying the layout locally first avoids waiting for a SwiftUI render to update cells.
     static func clampedZoom(start: Double, scale: CGFloat) -> Double {
@@ -448,31 +487,118 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         }
     }
     @objc private func longPress(_ gesture: UILongPressGestureRecognizer) {
-        let location = gesture.location(in: collection)
         switch gesture.state {
         case .began:
-            guard activeTrim == nil, draggingTrack == nil,
-                  let index = collection.indexPathForItem(at: location), clips.count > 1 else { return }
-            onBeginMove?(clips[index.item].id)
-            moving = collection.beginInteractiveMovementForItem(at: index)
-            if moving { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+            guard let index = collection.indexPathForItem(at: gesture.location(in: collection)) else { return }
+            _ = beginReorder(at: index.item, point: gesture.location(in: self))
         case .changed:
-            if moving { collection.updateInteractiveMovementTargetPosition(location) }
+            updateReorder(at: gesture.location(in: self))
         case .ended:
-            if moving { collection.endInteractiveMovement(); moving = false; setPosition() }
+            updateReorder(at: gesture.location(in: self)); finishReorder(commit: true)
         default:
-            if moving { collection.cancelInteractiveMovement(); moving = false; setPosition() }
+            finishReorder(commit: false)
         }
+    }
+    @discardableResult func beginReorder(at index: Int, point: CGPoint) -> Bool {
+        guard collection.isUserInteractionEnabled, clips.count > 1, clips.indices.contains(index),
+              !moving, !pinching, !userScrolling, activeTrim == nil, draggingTrack == nil,
+              point.x.isFinite, point.y.isFinite else { return false }
+        let clip = clips[index]
+        reorderSession = ReorderSession(original: clips, id: clip.id, origin: index, target: index)
+        moving = true; selected = clip.id; reorderPoint = point
+        collection.isScrollEnabled = false; canvas.isHidden = true
+        layout.minimumLineSpacing = TimelineReorderGeometry.spacing
+        collection.reloadData(); layout.invalidateLayout(); collection.layoutIfNeeded()
+        let center = CGFloat(index) * TimelineReorderGeometry.stride + TimelineReorderGeometry.width / 2
+        setReorderOffset(center - point.x)
+        let ghost = TimelineCell(frame: CGRect(x: 0, y: 0, width: TimelineReorderGeometry.width, height: 60))
+        ghost.configure(clip, index: index, selected: true, image: thumbnails[clip.id], compact: true)
+        ghost.isAccessibilityElement = false; ghost.isUserInteractionEnabled = false
+        ghost.layer.shadowColor = UIColor.black.cgColor; ghost.layer.shadowOpacity = 0.45
+        ghost.layer.shadowRadius = 5; ghost.layer.shadowOffset = CGSize(width: 0, height: 4)
+        addSubview(ghost); reorderGhost = ghost
+        reorderGap.isHidden = false; reorderHint.isHidden = false
+        trackHandles.values.forEach { $0.isHidden = true }; trimHandles.values.forEach { $0.isHidden = true }
+        updateReorderFeedback()
+        let ticker = TimelineReorderTicker(); ticker.surface = self; reorderTicker = ticker
+        let link = CADisplayLink(target: ticker, selector: #selector(TimelineReorderTicker.tick(_:)))
+        link.preferredFramesPerSecond = 60; link.add(to: .main, forMode: .common); reorderDisplayLink = link
+        onBeginMove?(clip.id)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        return true
+    }
+    func updateReorder(at point: CGPoint) {
+        guard var session = reorderSession, point.x.isFinite, point.y.isFinite else { return }
+        reorderPoint = point
+        let x = min(bounds.width - 1, max(0, point.x)) + collection.contentOffset.x
+        let target = TimelineReorderGeometry.index(at: x, count: clips.count)
+        if target != session.target {
+            let prior = session.target
+            let clip = clips.remove(at: prior); clips.insert(clip, at: target)
+            session.target = target; reorderSession = session
+            collection.performBatchUpdates({
+                collection.moveItem(at: IndexPath(item: prior, section: 0), to: IndexPath(item: target, section: 0))
+            }, completion: { [weak self] _ in self?.refreshReorderCells() })
+            UISelectionFeedbackGenerator().selectionChanged()
+        }
+        refreshReorderCells(); updateReorderFeedback()
+    }
+    private func refreshReorderCells() {
+        guard let session = reorderSession else { return }
+        for path in collection.indexPathsForVisibleItems where clips.indices.contains(path.item) {
+            let clip = clips[path.item]
+            let cell = collection.cellForItem(at: path) as? TimelineCell
+            cell?.configure(clip, index: path.item, selected: clip.id == session.id, image: thumbnails[clip.id], compact: true)
+            cell?.alpha = clip.id == session.id ? 0 : 1
+        }
+    }
+    private func updateReorderFeedback() {
+        guard let session = reorderSession else { return }
+        reorderGap.frame = CGRect(x: CGFloat(session.target) * TimelineReorderGeometry.stride - collection.contentOffset.x,
+                                  y: 28, width: TimelineReorderGeometry.width, height: 60)
+        reorderGap.accessibilityValue = "\(session.target + 1)/\(clips.count)"
+        reorderHint.frame = CGRect(x: 4, y: 94, width: max(0, bounds.width - 8), height: 22)
+        reorderHint.text = "Thả để chèn · \(session.target + 1)/\(clips.count)"
+        reorderGhost?.center = CGPoint(x: min(bounds.width - 1, max(0, reorderPoint.x)), y: 52)
+    }
+    private func setReorderOffset(_ value: CGFloat) {
+        let lower = -collection.contentInset.left
+        let upper = max(lower, collection.contentSize.width - bounds.width + collection.contentInset.right)
+        collection.setContentOffset(CGPoint(x: min(upper, max(lower, value)), y: 0), animated: false)
+    }
+    func advanceReorder(by elapsed: TimeInterval) {
+        guard moving, elapsed.isFinite, elapsed > 0 else { return }
+        let velocity = TimelineReorderGeometry.velocity(at: reorderPoint.x, viewport: bounds.width)
+        guard velocity != 0 else { return }
+        setReorderOffset(collection.contentOffset.x + velocity * CGFloat(min(0.05, elapsed)))
+        updateReorder(at: reorderPoint)
+    }
+    func finishReorder(commit: Bool) {
+        guard let session = reorderSession else { return }
+        reorderDisplayLink?.invalidate(); reorderDisplayLink = nil; reorderTicker = nil
+        reorderGhost?.removeFromSuperview(); reorderGhost = nil
+        reorderGap.isHidden = true; reorderHint.isHidden = true
+        reorderSession = nil; moving = false
+        if !commit { clips = session.original }
+        canvas.isHidden = false; collection.isScrollEnabled = true; layout.minimumLineSpacing = 0
+        collection.reloadData(); layout.invalidateLayout(); collection.layoutIfNeeded()
+        trackHandles.values.forEach { $0.isHidden = false }
+        setPosition(); updateMarks()
+        if commit, session.target != session.origin { onMove?(session.id, session.target) }
+    }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { finishReorder(commit: false) }
     }
     func cancelInteraction() {
         cancelTrim()
-        if moving { collection.cancelInteractiveMovement(); moving = false }
+        finishReorder(commit: false)
         if pinching { pinching = false; onEndScrub?(time) }
         if userScrolling { finishScrub() }
         if draggingTrack != nil { draggingTrack = nil; updateTrackFrames() }
     }
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-        guard !pinching else { return }
+        guard !pinching, !moving else { return }
         userScrolling = true; lastScrub = 0; onBeginScrub?()
     }
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -497,6 +623,11 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     }
 }
 
+private final class TimelineReorderTicker: NSObject {
+    weak var surface: TimelineSurface?
+    @objc func tick(_ link: CADisplayLink) { surface?.advanceReorder(by: link.targetTimestamp - link.timestamp) }
+}
+
 private final class TimelineCell: UICollectionViewCell {
     private let label = UILabel()
     private var sourceImages: [UIImage] = []
@@ -517,7 +648,7 @@ private final class TimelineCell: UICollectionViewCell {
             frame.frame = CGRect(x: CGFloat(index) * width, y: 0, width: width, height: bounds.height)
         }
     }
-    func configure(_ clip: VideoSegment, index: Int, selected: Bool, image: [UIImage]?) {
+    func configure(_ clip: VideoSegment, index: Int, selected: Bool, image: [UIImage]?, compact: Bool = false) {
         label.text = formatTime(clip.duration)
         accessibilityIdentifier = "clip_\(index)"; accessibilityLabel = "Đoạn \(index + 1), \(formatTime(clip.duration))"
         accessibilityTraits = selected ? [.button, .selected] : .button
@@ -525,7 +656,8 @@ private final class TimelineCell: UICollectionViewCell {
         if ProcessInfo.processInfo.arguments.contains("--uitesting") { accessibilityValue = clip.id.uuidString }
         #endif
         contentView.layer.borderWidth = selected ? 3 : 1; contentView.layer.borderColor = selected ? UIColor.cyan.cgColor : UIColor.black.cgColor
-        let images = image ?? []
+        let originals = image ?? []
+        let images = compact && originals.count > 3 ? (0..<3).map { originals[$0 * (originals.count - 1) / 2] } : originals
         if sourceImages.count != images.count || zip(sourceImages, images).contains(where: { $0.0 !== $0.1 }) {
             filmFrames.forEach { $0.removeFromSuperview() }; filmFrames.removeAll()
             sourceImages = images
@@ -540,6 +672,7 @@ private final class TimelineCell: UICollectionViewCell {
     }
     override func prepareForReuse() {
         super.prepareForReuse()
+        alpha = 1
         filmFrames.forEach { $0.removeFromSuperview() }; filmFrames.removeAll(); sourceImages.removeAll()
     }
 }

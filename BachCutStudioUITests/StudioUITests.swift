@@ -100,6 +100,79 @@ final class StudioUITests: XCTestCase {
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); shot.name = "Centered timeline after drag"; shot.lifetime = .keepAlways; add(shot)
     }
 
+    func testCompactReorderEdgeHoldInsertionUndoAndRelaunch() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--uitesting-reset", "--uitesting-fixture", "--uitesting-reorder"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 30)); app.staticTexts["Kiểm thử Studio"].tap()
+        let play = app.buttons["playPause"]
+        XCTAssertTrue(play.waitForExistence(timeout: 15))
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
+        let timeline = app.collectionViews["centeredTimeline"]
+        let first = app.descendants(matching: .any).matching(identifier: "clip_0").firstMatch
+        let firstID = first.value as? String; XCTAssertNotNil(firstID)
+        let time = app.staticTexts["playheadTime"].label
+        let source = first.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5))
+        let edge = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.85))
+        source.press(forDuration: 0.35, thenDragTo: edge, withVelocity: .slow, thenHoldForDuration: 1.5)
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
+        XCTAssertEqual(app.staticTexts["playheadTime"].label, time)
+        app.sliders["scrubber"].adjust(toNormalizedSliderPosition: 0.8)
+        let last = app.descendants(matching: .any).matching(identifier: "clip_5").firstMatch
+        XCTAssertEqual(last.value as? String, firstID, "Stationary edge hold must carry the first clip beyond the initially visible slots")
+        app.buttons["undo"].tap()
+        app.buttons["Về đầu"].tap()
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "clip_0").firstMatch.value as? String, firstID)
+        XCTAssertFalse(app.buttons["undo"].isEnabled, "One reorder gesture must create one history entry")
+        app.buttons["redo"].tap()
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
+        app.sliders["scrubber"].adjust(toNormalizedSliderPosition: 0.8)
+        last.tap()
+        let selectedLast = app.descendants(matching: .any).matching(identifier: "clip_5").firstMatch
+        // Compact slot centres are 88 points apart; move exactly one slot left, even below the video row.
+        let from = selectedLast.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5))
+        let middle = from.withOffset(CGVector(dx: -88, dy: 75))
+        from.press(forDuration: 0.35, thenDragTo: middle)
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "clip_4").firstMatch.value as? String, firstID,
+                       "Dropping below the row must insert between clips instead of abandoning the gesture")
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); shot.name = "Compact reorder inserted between clips portrait"; shot.lifetime = .keepAlways; add(shot)
+        rotateAndSettle(app, landscape: true)
+        XCTAssertTrue(app.buttons["exportVideo"].waitForExistence(timeout: 10))
+        let landscape = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); landscape.name = "Compact reorder landscape editor"; landscape.lifetime = .keepAlways; add(landscape)
+        app.terminate(); app.launchArguments = ["--uitesting"]; app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 15)); app.staticTexts["Kiểm thử Studio"].tap()
+        XCTAssertTrue(app.collectionViews["centeredTimeline"].waitForExistence(timeout: 15))
+        app.sliders["scrubber"].adjust(toNormalizedSliderPosition: 0.6)
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "clip_4").firstMatch.value as? String, firstID)
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    func testShortSelectedClipCanBeHeldThroughOverlappingTrimGrips() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--uitesting-reset", "--uitesting-fixture", "--uitesting-short-reorder"]; app.launch()
+        XCTAssertTrue(app.staticTexts["Kiểm thử Studio"].waitForExistence(timeout: 30)); app.staticTexts["Kiểm thử Studio"].tap()
+        let play = app.buttons["playPause"]
+        XCTAssertTrue(play.waitForExistence(timeout: 15))
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
+        app.sliders["scrubber"].adjust(toNormalizedSliderPosition: 0.78)
+        let short = app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch
+        let id = short.value as? String; XCTAssertNotNil(id)
+        short.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let time = app.staticTexts["playheadTime"].label
+        let selected = app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch
+        XCTAssertLessThan(selected.frame.width, 20, "The fixture must be shorter than its two overlapping trim grips")
+        let source = selected.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        source.press(forDuration: 0.35, thenDragTo: source.withOffset(CGVector(dx: 88, dy: 40)))
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: play); waitForExpectations(timeout: 20)
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "clip_2").firstMatch.value as? String, id)
+        XCTAssertEqual(app.staticTexts["durationTime"].label, "00:10.5", "Holding a grip must reorder without trimming the short source")
+        XCTAssertEqual(app.staticTexts["playheadTime"].label, time)
+        app.buttons["undo"].tap()
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "clip_1").firstMatch.value as? String, id)
+        XCTAssertFalse(app.buttons["undo"].isEnabled)
+    }
+
     func testSecondaryTracksDragUndoPersistenceAndRotation() {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "--uitesting-reset", "--uitesting-fixture", "--uitesting-multitrack"]
