@@ -26,6 +26,7 @@ struct CenteredTimeline: UIViewRepresentable {
     let beginMove: (UUID) -> Void
     let move: (UUID, Int) -> Void
     let tapTrack: (UUID, Bool) -> Void
+    let beginTrackDrag: () -> Void
     let moveTrack: (UUID, Bool, Double) -> Void
 
     func makeUIView(context: Context) -> TimelineSurface { TimelineSurface() }
@@ -33,7 +34,7 @@ struct CenteredTimeline: UIViewRepresentable {
         view.onSelect = select; view.onBeginScrub = beginScrub; view.onScrub = scrub
         view.onEndScrub = endScrub; view.onZoomChange = changeZoom
         view.onBeginMove = beginMove; view.onMove = move
-        view.onTapTrack = tapTrack; view.onMoveTrack = moveTrack
+        view.onTapTrack = tapTrack; view.onBeginTrackDrag = beginTrackDrag; view.onMoveTrack = moveTrack
         view.apply(project: project, selected: selected, thumbnails: thumbnails, zoom: zoom, playhead: playhead, enabled: enabled)
     }
     static func dismantleUIView(_ view: TimelineSurface, coordinator: ()) { view.cancelInteraction() }
@@ -70,6 +71,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     var onBeginMove: ((UUID) -> Void)?
     var onMove: ((UUID, Int) -> Void)?
     var onTapTrack: ((UUID, Bool) -> Void)?
+    var onBeginTrackDrag: (() -> Void)?
     var onMoveTrack: ((UUID, Bool, Double) -> Void)?
 
     override init(frame: CGRect) {
@@ -214,6 +216,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
             guard !moving, !pinching, !userScrolling else { return }
             draggingTrack = handle.trackID
             trackDragStart = track.start
+            onBeginTrackDrag?()
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         case .changed:
             guard draggingTrack == handle.trackID else { return }
