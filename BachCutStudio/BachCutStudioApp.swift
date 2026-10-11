@@ -247,11 +247,14 @@ struct TrackTimingSheet: View {
                         .accessibilityIdentifier("trackStart")
                     HStack {
                         Button("−0,1 giây") { offset = max(0, offset - 0.1); clampLength() }
+                            .accessibilityIdentifier("trackBack")
                         Spacer()
                         Button("Tại vạch tua") { offset = min(maxOffset, max(0, playhead)); clampLength() }
+                            .accessibilityIdentifier("trackAtPlayhead")
                         Spacer()
                         Button("+0,1 giây") { offset = min(maxOffset, offset + 0.1); clampLength() }
-                    }.font(.caption)
+                            .accessibilityIdentifier("trackForward")
+                    }.font(.caption).buttonStyle(.borderless)
                 }
                 Section("Bắt đầu trong tệp · " + formatTime(sourceStart)) {
                     Slider(value: $sourceStart, in: 0...max(0.001, maxSourceStart))
@@ -264,7 +267,7 @@ struct TrackTimingSheet: View {
                         Spacer()
                         Button("+0,1 giây") { sourceStart = min(maxSourceStart, sourceStart + 0.1); clampLength() }
                             .accessibilityIdentifier("sourceForward")
-                    }.font(.caption)
+                    }.font(.caption).buttonStyle(.borderless)
                 }
                 Section("Độ dài · " + formatTime(length)) {
                     Slider(value: $length, in: 0.05...availableLength)
