@@ -16,6 +16,7 @@ struct EditorScreen: View {
     @State private var zoom = 24.0
     @State private var showTrim = false
     @State private var showExport = false
+    @State private var editingTrack: TrackTimingSelection?
     init(project: StudioProject, store: ProjectStore = ProjectStore()) { _model = StateObject(wrappedValue: EditorModel(project: project, store: store)) }
     var body: some View {
         GeometryReader { geo in
@@ -58,6 +59,20 @@ struct EditorScreen: View {
         }
         .sheet(isPresented: $showTrim) { if let clip = model.selectedClip { TrimSheet(clip: clip) { start, end in model.trim(clip.id, start: start, end: end) } } }
         .sheet(isPresented: $showExport) { ExportSheet(model: model) }
+        .sheet(item: $editingTrack) { track in
+            if track.kind == .audio, let sound = model.project.audio.first(where: { $0.id == track.id }) {
+                TrackTimingSheet(title: "Nhạc nền", offset: sound.offset, length: sound.duration,
+                                 maxLength: sound.sourceDuration, timelineLength: model.duration, playhead: model.playhead) { start, length in
+                    model.setAudioTiming(sound.id, offset: start, duration: length)
+                }
+            } else if track.kind == .overlay, let overlay = model.project.overlays.first(where: { $0.id == track.id }) {
+                TrackTimingSheet(title: "Lớp phủ video", offset: overlay.offset, length: overlay.clip.duration,
+                                 maxLength: (overlay.clip.sourceDuration - overlay.clip.start) / overlay.clip.speed,
+                                 timelineLength: model.duration, playhead: model.playhead) { start, length in
+                    model.setOverlayTiming(overlay.id, offset: start, duration: length)
+                }
+            }
+        }
         .tint(.cyan)
     }
     var header: some View {
@@ -121,10 +136,14 @@ struct EditorScreen: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
                         ForEach(model.project.overlays) { overlay in
-                            Menu("V2 · Lớp phủ") { Button("Xóa lớp phủ", role: .destructive) { model.removeOverlay(overlay.id) } }
+                            Menu("V2 · \(formatTime(overlay.offset)) · \(formatTime(overlay.clip.duration))") {
+                                Button("Đổi vị trí và độ dài") { editingTrack = TrackTimingSelection(id: overlay.id, kind: .overlay) }
+                                Button("Xóa lớp phủ", role: .destructive) { model.removeOverlay(overlay.id) }
+                            }
                         }
                         ForEach(model.project.audio) { sound in
-                            Menu("A2 · Nhạc \(Int(sound.volume * 100))%") {
+                            Menu("A2 · \(formatTime(sound.offset)) · \(formatTime(sound.duration))") {
+                                Button("Đổi vị trí và độ dài") { editingTrack = TrackTimingSelection(id: sound.id, kind: .audio) }
                                 Button("Âm lượng 50%") { model.audioVolume(sound.id, value: 0.5) }
                                 Button("Âm lượng 100%") { model.audioVolume(sound.id, value: 1) }
                                 Button("Xóa nhạc", role: .destructive) { model.removeAudio(sound.id) }
@@ -175,6 +194,66 @@ struct EditorScreen: View {
 func formatTime(_ value: Double) -> String {
     guard value.isFinite else { return "00:00.0" }; let safe = max(0, value)
     return String(format: "%02d:%04.1f", Int(safe) / 60, safe.truncatingRemainder(dividingBy: 60))
+}
+struct TrackTimingSelection: Identifiable {
+    enum Kind { case audio, overlay }
+    let id: UUID
+    let kind: Kind
+}
+
+struct TrackTimingSheet: View {
+    let title: String
+    let maxLength: Double
+    let timelineLength: Double
+    let playhead: Double
+    let apply: (Double, Double) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var offset: Double
+    @State private var length: Double
+    init(title: String, offset: Double, length: Double, maxLength: Double, timelineLength: Double,
+         playhead: Double, apply: @escaping (Double, Double) -> Void) {
+        self.title = title
+        self.maxLength = maxLength
+        self.timelineLength = timelineLength
+        self.playhead = playhead
+        self.apply = apply
+        _offset = State(initialValue: offset)
+        _length = State(initialValue: length)
+    }
+    private var maxOffset: Double { max(0, timelineLength - 0.05) }
+    private var availableLength: Double { max(0.05, min(maxLength, timelineLength - offset)) }
+    private func clampLength() { length = min(length, availableLength) }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Bắt đầu · " + formatTime(offset)) {
+                    Slider(value: $offset, in: 0...max(0.001, maxOffset))
+                        .accessibilityIdentifier("trackStart")
+                    HStack {
+                        Button("−0,1 giây") { offset = max(0, offset - 0.1); clampLength() }
+                        Spacer()
+                        Button("Tại vạch tua") { offset = min(maxOffset, max(0, playhead)); clampLength() }
+                        Spacer()
+                        Button("+0,1 giây") { offset = min(maxOffset, offset + 0.1); clampLength() }
+                    }.font(.caption)
+                }
+                Section("Độ dài · " + formatTime(length)) {
+                    Slider(value: $length, in: 0.05...availableLength)
+                        .accessibilityIdentifier("trackDuration")
+                    Text("Tối đa " + formatTime(availableLength) + " tại vị trí hiện tại.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .onChange(of: offset) { _ in clampLength() }
+            .navigationTitle(title)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Hủy") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Áp dụng") { apply(offset, length); dismiss() }.accessibilityIdentifier("applyTrackTiming")
+                }
+            }
+        }.presentationDetents([.medium, .large])
+    }
 }
 struct TrimSheet: View {
     let clip: VideoSegment
