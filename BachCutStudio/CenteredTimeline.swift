@@ -20,13 +20,15 @@ struct CenteredTimeline: UIViewRepresentable {
     let beginScrub: () -> Void
     let scrub: (Double) -> Void
     let endScrub: (Double) -> Void
+    let changeZoom: (Double) -> Void
     let beginMove: (UUID) -> Void
     let move: (UUID, Int) -> Void
 
     func makeUIView(context: Context) -> TimelineSurface { TimelineSurface() }
     func updateUIView(_ view: TimelineSurface, context: Context) {
         view.onSelect = select; view.onBeginScrub = beginScrub; view.onScrub = scrub
-        view.onEndScrub = endScrub; view.onBeginMove = beginMove; view.onMove = move
+        view.onEndScrub = endScrub; view.onZoomChange = changeZoom
+        view.onBeginMove = beginMove; view.onMove = move
         view.apply(project: project, selected: selected, thumbnails: thumbnails, zoom: zoom, playhead: playhead, enabled: enabled)
     }
     static func dismantleUIView(_ view: TimelineSurface, coordinator: ()) { view.cancelInteraction() }
@@ -45,6 +47,8 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     private var time = 0.0
     private var duration = 0.0
     private var userScrolling = false
+    private var pinching = false
+    private var pinchStartZoom = 24.0
     private var moving = false
     private var synchronizing = false
     private var lastWidth: CGFloat = 0
@@ -53,6 +57,7 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     var onBeginScrub: (() -> Void)?
     var onScrub: ((Double) -> Void)?
     var onEndScrub: ((Double) -> Void)?
+    var onZoomChange: ((Double) -> Void)?
     var onBeginMove: ((UUID) -> Void)?
     var onMove: ((UUID, Int) -> Void)?
 
@@ -80,6 +85,8 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         addSubview(timeLabel)
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(longPress(_:)))
         hold.minimumPressDuration = 0.35; collection.addGestureRecognizer(hold)
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinchZoom(_:)))
+        collection.addGestureRecognizer(pinch)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func layoutSubviews() {
@@ -162,6 +169,35 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
         // Durations travel with their clips; rebuild widths and accessibility indices after the drop.
         DispatchQueue.main.async { [weak self] in self?.collection.reloadData(); self?.layout.invalidateLayout() }
     }
+    // Zoom is anchored at the fixed center playhead, independently of finger position.
+    // Applying the layout locally first avoids waiting for a SwiftUI render to update cells.
+    static func clampedZoom(start: Double, scale: CGFloat) -> Double {
+        guard start.isFinite, scale.isFinite, scale > 0 else { return min(80, max(8, start.isFinite ? start : 24)) }
+        return min(80, max(8, start * Double(scale)))
+    }
+    @objc private func pinchZoom(_ gesture: UIPinchGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            guard !moving else { return }
+            pinching = true; pinchStartZoom = zoom
+            if !userScrolling { onBeginScrub?() }
+        case .changed:
+            guard pinching else { return }
+            let next = Self.clampedZoom(start: pinchStartZoom, scale: gesture.scale)
+            guard abs(zoom - next) > 0.001 else { return }
+            zoom = next
+            layout.invalidateLayout(); collection.layoutIfNeeded()
+            setPosition(); updateMarks()
+            onZoomChange?(next)
+        case .ended, .cancelled, .failed:
+            guard pinching else { return }
+            pinching = false
+            // Seek once after the gesture; the visual playhead time does not change.
+            userScrolling = false
+            setPosition(); onEndScrub?(time)
+        default: break
+        }
+    }
     @objc private func longPress(_ gesture: UILongPressGestureRecognizer) {
         let location = gesture.location(in: collection)
         switch gesture.state {
@@ -180,19 +216,23 @@ final class TimelineSurface: UIView, UICollectionViewDataSource, UICollectionVie
     }
     func cancelInteraction() {
         if moving { collection.cancelInteractiveMovement(); moving = false }
+        if pinching { pinching = false; onEndScrub?(time) }
         if userScrolling { finishScrub() }
     }
-    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { userScrolling = true; lastScrub = 0; onBeginScrub?() }
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        guard !pinching else { return }
+        userScrolling = true; lastScrub = 0; onBeginScrub?()
+    }
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         updateMarks()
-        guard userScrolling, !synchronizing, !moving else { return }
+        guard userScrolling, !synchronizing, !moving, !pinching else { return }
         time = position
         updateTimecode()
         let now = CACurrentMediaTime()
         if now - lastScrub >= 1.0 / 30 { lastScrub = now; onScrub?(time) }
     }
-    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) { if !decelerate { finishScrub() } }
-    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { finishScrub() }
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) { if !decelerate && !pinching { finishScrub() } }
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { if !pinching { finishScrub() } }
     private func finishScrub() {
         guard userScrolling else { return }
         let releasedTime = position

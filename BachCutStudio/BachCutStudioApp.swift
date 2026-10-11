@@ -107,16 +107,16 @@ struct EditorScreen: View {
             HStack {
                 Text("TIMELINE").font(.caption.bold()).foregroundStyle(.gray)
                 Spacer(); Image(systemName: "minus.magnifyingglass")
-                Slider(value: $zoom, in: 8...80).frame(width: 110)
+                Slider(value: $zoom, in: 8...80).frame(width: 110).accessibilityIdentifier("timelineZoom")
                 Image(systemName: "plus.magnifyingglass")
             }.font(.caption)
             CenteredTimeline(project: model.project, selected: model.selected, thumbnails: model.thumbnails, zoom: zoom, playhead: model.playhead,
                              enabled: !model.busy && !model.rendering, select: model.select, beginScrub: model.beginScrub,
-                             scrub: model.seek, endScrub: model.endScrub,
+                             scrub: model.seek, endScrub: model.endScrub, changeZoom: { zoom = $0 },
                              beginMove: { id in model.pause(); model.selected = id }, move: model.moveClip)
                 .frame(height: CGFloat(128 + (model.project.overlays.count + model.project.audio.count) * 32))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-            Text("Kéo để tua · Nhấn giữ đoạn để đổi thứ tự").font(.caption2).foregroundStyle(.secondary)
+            Text("Kéo để tua · Chụm 2 ngón để zoom · Nhấn giữ để đổi thứ tự").font(.caption2).foregroundStyle(.secondary)
             if !model.project.audio.isEmpty || !model.project.overlays.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {

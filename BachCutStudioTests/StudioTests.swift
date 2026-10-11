@@ -403,6 +403,26 @@ final class StudioTests: XCTestCase {
         XCTAssertEqual(TimelineSurface.snappedTime(2.7, in: clips, zoom: 80), 2.7, accuracy: 0.0001)
     }
 
+    func testNativePinchZoomBoundsAndCenterAnchor() {
+        XCTAssertEqual(TimelineSurface.clampedZoom(start: 24, scale: 2), 48, accuracy: 0.0001)
+        XCTAssertEqual(TimelineSurface.clampedZoom(start: 24, scale: 0.5), 12, accuracy: 0.0001)
+        XCTAssertEqual(TimelineSurface.clampedZoom(start: 60, scale: 3), 80, accuracy: 0.0001)
+        XCTAssertEqual(TimelineSurface.clampedZoom(start: 10, scale: 0.1), 8, accuracy: 0.0001)
+        XCTAssertEqual(TimelineSurface.clampedZoom(start: 24, scale: .nan), 24, accuracy: 0.0001)
+        let project = StudioProject()
+        let timeline = TimelineSurface(frame: CGRect(x: 0, y: 0, width: 393, height: 128))
+        timeline.layoutIfNeeded()
+        timeline.apply(project: project, selected: nil, thumbnails: [:], zoom: 24, playhead: 0, enabled: true)
+        let initialAnchor = timeline.collection.contentOffset.x + timeline.collection.contentInset.left
+        // UIKit snaps scroll offsets to the display pixel grid (e.g. 1/6 pt on odd-width views).
+        // A sub-point tolerance allows pixel rounding without allowing a visible cursor jump.
+        XCTAssertEqual(initialAnchor, 0, accuracy: 0.5)
+        timeline.apply(project: project, selected: nil, thumbnails: [:], zoom: 48, playhead: 0, enabled: true)
+        let zoomedAnchor = timeline.collection.contentOffset.x + timeline.collection.contentInset.left
+        XCTAssertEqual(zoomedAnchor, initialAnchor, accuracy: 0.01, "Zoom must keep the same centered playhead anchor")
+        XCTAssertEqual(zoomedAnchor, 0, accuracy: 0.5)
+    }
+
     func testCancelledExportRemovesPartialOutput() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("long.mov"); try await TestMedia.video(to: source, color: .green, duration: 20)
